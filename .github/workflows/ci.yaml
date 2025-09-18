@@ -1,0 +1,62 @@
+name: ci
+
+on: [pull_request] # yamllint disable-line rule:truthy
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+  checks: write # Used to annotate code in the PR
+  pull-requests: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: "go.mod"
+      - name: build
+        run: |
+          make build
+  linting:
+    needs: [build]
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: "go.mod"
+      - name: gofmt
+        run: |
+          gofmt_out=$(gofmt -d $(find * -name '*.go' ! -path 'vendor/*'))
+          if [[ -n "$gofmt_out" ]]; then
+              failed=1
+          fi
+          echo "$gofmt_out"
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6.0.1
+        with:
+          install-mode: "goinstall"
+          version: v1.64.8
+          
+  unit-tests:
+    name: unit-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: "go.mod"
+      - name: tests
+        run: |
+          make test

@@ -1,0 +1,15 @@
+# Minimal pre-commit configuration - fast checks only
+repos:
+  - repo: local
+    hooks:
+      - id: check-secrets
+        name: Security Check
+        entry: bash scripts/check-secrets.sh
+        language: system
+        pass_filenames: false
+        
+      - id: golangci-lint
+        name: Lint
+        entry: make lint
+        language: system
+        pass_filenames: false
