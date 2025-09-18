@@ -25,3 +25,12 @@ go.work
 *.swp
 *.swo
 *~
+.venv/
+
+# Any certificate files
+*.key
+*.csr
+*.p12
+*.crt
+*.pem
+.env

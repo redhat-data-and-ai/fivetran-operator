@@ -1,8 +1,10 @@
 # fivetran-operator
-// TODO(user): Add simple overview of use/purpose
+
+A Kubernetes operator for managing Fivetran resources like connectors and their schema configurations through declarative Kubernetes manifests.
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+
+The Fivetran Operator enables Kubernetes-native management of Fivetran connectors and their schema configurations. Initially, it focuses on managing connectors and their schemas, but the operator can be extended to support other Fivetran resources like destinations, hybrid agents, and more. It allows teams to define and manage Fivetran infrastructure using standard Kubernetes custom resources, enabling GitOps workflows and automated lifecycle management of Fivetran resources.
 
 ## Getting Started
 
