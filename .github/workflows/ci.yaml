@@ -44,10 +44,9 @@ jobs:
           fi
           echo "$gofmt_out"
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6.0.1
+        uses: golangci/golangci-lint-action@v8
         with:
-          install-mode: "goinstall"
-          version: v1.64.8
+          version: v2.1.0
           
   unit-tests:
     name: unit-tests
