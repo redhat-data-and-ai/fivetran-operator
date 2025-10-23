@@ -87,8 +87,12 @@ func (b *SchemaBuilder) AddColumn(schema, table, column string, enabled, hashed,
 
 	columnConfig := &connections.ConnectionSchemaConfigColumn{}
 	columnConfig.Enabled(enabled)
-	columnConfig.Hashed(hashed)
-	columnConfig.IsPrimaryKey(isPrimaryKey)
+	if hashed {
+		columnConfig.Hashed(hashed)
+	}
+	if isPrimaryKey {
+		columnConfig.IsPrimaryKey(isPrimaryKey)
+	}
 
 	tableConfig := &connections.ConnectionSchemaConfigTable{}
 	s.Table(table, tableConfig)

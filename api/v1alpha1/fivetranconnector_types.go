@@ -124,8 +124,8 @@ type TableObject struct {
 // ColumnObject represents a column within a table
 type ColumnObject struct {
 	Enabled      bool `json:"enabled"`
-	Hashed       bool `json:"hashed"`
-	IsPrimaryKey bool `json:"is_primary_key"`
+	Hashed       bool `json:"hashed,omitempty"`
+	IsPrimaryKey bool `json:"is_primary_key,omitempty"`
 	// +kubebuilder:validation:Enum=PLAINTEXT;HASHED;ENCRYPTED
 	// The masking algorithm to apply to the column data. PLAINTEXT stores data as-is, HASHED applies hashing, ENCRYPTED applies encryption.
 	MaskingAlgorithm string `json:"masking_algorithm,omitempty"`

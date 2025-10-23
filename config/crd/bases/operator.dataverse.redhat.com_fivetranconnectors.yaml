@@ -229,8 +229,6 @@ spec:
                                       type: string
                                   required:
                                   - enabled
-                                  - hashed
-                                  - is_primary_key
                                   type: object
                                 type: object
                               enabled:
