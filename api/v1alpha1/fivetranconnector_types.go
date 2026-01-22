@@ -104,6 +104,11 @@ type ConnectorSchemaConfig struct {
 	// +kubebuilder:validation:Enum=ALLOW_ALL;ALLOW_COLUMNS;BLOCK_ALL
 	// The schema change handling policy. ALLOW_ALL includes all new schemas, tables, and columns. ALLOW_COLUMNS excludes new schemas and tables but includes new columns. BLOCK_ALL excludes all new schemas, tables, and columns.
 	SchemaChangeHandling string `json:"schema_change_handling,omitempty"`
+
+	// +kubebuilder:validation:Enum=NONE;TABLES
+	// +kubebuilder:default:=TABLES
+	// The validation level for schema configuration. NONE: no validation, apply config directly. TABLES: validate schema and table names (default).
+	ValidationLevel string `json:"validation_level,omitempty"`
 }
 
 // SchemaObject represents a schema within the connector

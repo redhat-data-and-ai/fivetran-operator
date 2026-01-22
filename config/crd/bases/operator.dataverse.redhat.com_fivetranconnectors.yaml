@@ -250,6 +250,15 @@ spec:
                       - enabled
                       type: object
                     type: object
+                  validation_level:
+                    default: TABLES
+                    description: 'The validation level for schema configuration. NONE:
+                      no validation, apply config directly. TABLES: validate schema
+                      and table names (default).'
+                    enum:
+                    - NONE
+                    - TABLES
+                    type: string
                 type: object
             required:
             - connector
