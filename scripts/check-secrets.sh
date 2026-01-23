@@ -19,7 +19,7 @@ NC='\033[0m' # No Color
 echo -e "${GREEN}🔍 Scanning for sensitive information...${NC}"
 
 # Get list of files to be committed, excluding vendor directory
-FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -v '^vendor/' | grep -v '^docs/')
+FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -v '^vendor/' | grep -v '^docs/ | cat')
 
 if [ -z "$FILES" ]; then
     echo -e "${GREEN}✅ No files to check${NC}"

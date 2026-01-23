@@ -104,6 +104,11 @@ type ConnectorSchemaConfig struct {
 	// +kubebuilder:validation:Enum=ALLOW_ALL;ALLOW_COLUMNS;BLOCK_ALL
 	// The schema change handling policy. ALLOW_ALL includes all new schemas, tables, and columns. ALLOW_COLUMNS excludes new schemas and tables but includes new columns. BLOCK_ALL excludes all new schemas, tables, and columns.
 	SchemaChangeHandling string `json:"schema_change_handling,omitempty"`
+
+	// +kubebuilder:validation:Enum=NONE;TABLES
+	// +kubebuilder:default:=TABLES
+	// The validation level for schema configuration. NONE: no validation, apply config directly. TABLES: validate schema and table names (default).
+	ValidationLevel string `json:"validation_level,omitempty"`
 }
 
 // SchemaObject represents a schema within the connector
@@ -124,8 +129,8 @@ type TableObject struct {
 // ColumnObject represents a column within a table
 type ColumnObject struct {
 	Enabled      bool `json:"enabled"`
-	Hashed       bool `json:"hashed"`
-	IsPrimaryKey bool `json:"is_primary_key"`
+	Hashed       bool `json:"hashed,omitempty"`
+	IsPrimaryKey bool `json:"is_primary_key,omitempty"`
 	// +kubebuilder:validation:Enum=PLAINTEXT;HASHED;ENCRYPTED
 	// The masking algorithm to apply to the column data. PLAINTEXT stores data as-is, HASHED applies hashing, ENCRYPTED applies encryption.
 	MaskingAlgorithm string `json:"masking_algorithm,omitempty"`

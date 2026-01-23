@@ -51,6 +51,11 @@ func (r *FivetranConnectorReconciler) handleError(ctx context.Context, connector
 		return ctrl.Result{}, r.setCondition(ctx, connector, conditionType, metav1.ConditionFalse, reason, err.Error())
 	}
 
+	// Check if the error is a connector validation error from annotation (should not requeue)
+	if errors.Is(err, ErrConnectorValidationFailed) {
+		return ctrl.Result{}, r.setCondition(ctx, connector, conditionType, metav1.ConditionFalse, reason, err.Error())
+	}
+
 	// Check if the error is a vault resolution error
 	var vaultErr *vault.VaultError
 	if errors.As(err, &vaultErr) {

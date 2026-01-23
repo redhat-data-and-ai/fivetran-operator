@@ -48,21 +48,6 @@ func (r *FivetranConnectorReconciler) ensureFinalizer(ctx context.Context, conne
 	return nil
 }
 
-// handleExistingConnectorAdoptionIfNeeded handles existing connector adoption if annotation is present
-func (r *FivetranConnectorReconciler) handleExistingConnectorAdoptionIfNeeded(ctx context.Context, connector *operatorv1alpha1.FivetranConnector) (bool, error) {
-	logger := log.FromContext(ctx)
-	if connector.Status.ConnectorID == "" {
-		if adoptConnectorID := kubeutils.GetAnnotation(connector, annotationAdoptExistingConnectorID); adoptConnectorID != "" {
-			logger.Info("Found adoption annotation, handling connector adoption", "adoptConnectorID", adoptConnectorID)
-			if err := r.handleExistingConnectorAdoption(ctx, connector, adoptConnectorID); err != nil {
-				return false, err
-			}
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 // determineReconciliationNeeds determines what components need to be reconciled
 func (r *FivetranConnectorReconciler) determineReconciliationNeeds(ctx context.Context, connector *operatorv1alpha1.FivetranConnector, forceReconcile bool) (reconcileConnector, reconcileSchema bool, err error) {
 	logger := log.FromContext(ctx)
@@ -102,14 +87,6 @@ func (r *FivetranConnectorReconciler) cleanupAnnotationsAndLabels(ctx context.Co
 	// Remove force reconcile label if it exists
 	if kubeutils.HasLabel(connector, annotationForceReconcile) {
 		kubeutils.RemoveLabel(connector, annotationForceReconcile)
-		if err := r.Update(ctx, connector); err != nil {
-			return err
-		}
-	}
-
-	// Remove adoption annotation if it exists
-	if kubeutils.HasAnnotation(connector, annotationAdoptExistingConnectorID) {
-		kubeutils.RemoveAnnotation(connector, annotationAdoptExistingConnectorID)
 		if err := r.Update(ctx, connector); err != nil {
 			return err
 		}

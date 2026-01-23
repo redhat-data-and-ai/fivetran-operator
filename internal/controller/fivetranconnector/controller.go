@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -38,9 +39,10 @@ import (
 // FivetranConnectorReconciler reconciles a FivetranConnector object
 type FivetranConnectorReconciler struct {
 	client.Client
-	Scheme         *runtime.Scheme
-	FivetranClient *fivetran.Client
-	VaultClient    *vaultpkg.VaultClient
+	Scheme                  *runtime.Scheme
+	FivetranClient          *fivetran.Client
+	VaultClient             *vaultpkg.VaultClient
+	MaxConcurrentReconciles int
 }
 
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=fivetran-operator,resources=fivetranconnectors,verbs=get;list;watch;create;update;patch;delete
@@ -72,7 +74,7 @@ func (r *FivetranConnectorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		vaultClient, err := vaultpkg.InitializeVaultClientFromSecret(ctx, r.Client, req.Namespace, vaultSecretName)
 		if err != nil {
 			err = fmt.Errorf("%w: %w", ErrVaultClientInitializationFailed, err)
-			return r.handleError(ctx, connector, conditionTypeConnectorReady, ConnectorReasonVaultClientInitializationFailed, err)
+			return ctrl.Result{}, err
 		}
 		r.VaultClient = vaultClient
 		logger.Info("vault client initialized successfully")
@@ -93,15 +95,6 @@ func (r *FivetranConnectorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// Check force reconcile flag
 	forceReconcile := kubeutils.HasLabel(connector, annotationForceReconcile)
-
-	// Handle connector adoption if needed
-	needRequeue, err := r.handleExistingConnectorAdoptionIfNeeded(ctx, connector)
-	if err != nil {
-		return r.handleError(ctx, connector, conditionTypeConnectorReady, ConnectorReasonExistingConnectorAdoptionFailed, err)
-	}
-	if needRequeue {
-		return ctrl.Result{Requeue: true}, nil
-	}
 
 	// Determine what needs to be reconciled
 	reconcileConnector, reconcileSchema, err := r.determineReconciliationNeeds(ctx, connector, forceReconcile)
@@ -160,8 +153,7 @@ func (r *FivetranConnectorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// This is needed because ScheduleType is not available in createconnector API
 	if reconcileConnector {
 		logger.Info("Updating connector again to set ScheduleType and pause state")
-		_, err = r.updateConnector(ctx, connector, connectorID, resolvedConfig, resolvedAuth)
-		if err != nil {
+		if err := r.updateConnector(ctx, connector, connectorID, resolvedConfig, resolvedAuth); err != nil {
 			return r.handleError(ctx, connector, conditionTypeConnectorReady, ConnectorReasonReconciliationFailed, err)
 		}
 	}
@@ -206,8 +198,10 @@ func (r *FivetranConnectorReconciler) handleDeletion(ctx context.Context, connec
 func (r *FivetranConnectorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// add a predicate to the controller to reconcile only when the generation of the CR changes or the force sync label is added
 	labelPredicate := kubeutils.CustomLabelKeyChangedPredicate{LabelKey: kubeutils.ForceReconcileLabel}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&operatorv1alpha1.FivetranConnector{}).
 		WithEventFilter(predicate.Or(predicate.GenerationChangedPredicate{}, labelPredicate)).
+		WithOptions(controller.Options{MaxConcurrentReconciles: r.MaxConcurrentReconciles}).
 		Complete(r)
 }

@@ -24,10 +24,10 @@ const (
 	fivetranConnectorURL = "https://fivetran.com/dashboard/connectors/%s"
 
 	// Annotation constants
-	annotationForceReconcile           = "operator.dataverse.redhat.com/force-reconcile"
-	annotationConnectorHash            = "operator.dataverse.redhat.com/connector-hash"
-	annotationSchemaHash               = "operator.dataverse.redhat.com/schema-hash"
-	annotationAdoptExistingConnectorID = "operator.dataverse.redhat.com/adopt-existing-connector-id"
+	annotationForceReconcile = "operator.dataverse.redhat.com/force-reconcile"
+	annotationConnectorHash  = "operator.dataverse.redhat.com/connector-hash"
+	annotationSchemaHash     = "operator.dataverse.redhat.com/schema-hash"
+	annotationConnectorID    = "operator.dataverse.redhat.com/connector-id"
 
 	// Condition types
 	conditionTypeConnectorReady = "ConnectorReady"
@@ -35,14 +35,13 @@ const (
 	conditionTypeSchemaReady    = "SchemaReady"
 
 	// Standard Kubernetes condition reasons
-	ConnectorReasonDeletionFailed                  = "DeletionFailed"
-	ConnectorReasonFinalizerUpdateFailed           = "FinalizerUpdateFailed"
-	ConnectorReasonReconciliationFailed            = "ReconciliationFailed"
-	ConnectorReasonSuccess                         = "ReconciledSuccessfully"
-	ConnectorReasonVaultClientInitializationFailed = "VaultClientInitializationFailed"
-	ConnectorReasonVaultSecretsResolutionFailed    = "VaultSecretsResolutionFailed"
-	ConnectorReasonFivetranClientNotInitialized    = "FivetranClientNotInitialized"
-	ConnectorReasonExistingConnectorAdoptionFailed = "ExistingConnectorAdoptionFailed"
+	ConnectorReasonDeletionFailed               = "DeletionFailed"
+	ConnectorReasonFinalizerUpdateFailed        = "FinalizerUpdateFailed"
+	ConnectorReasonReconciliationFailed         = "ReconciliationFailed"
+	ConnectorReasonSuccess                      = "ReconciledSuccessfully"
+	ConnectorReasonVaultSecretsResolutionFailed = "VaultSecretsResolutionFailed"
+	ConnectorReasonFivetranClientNotInitialized = "FivetranClientNotInitialized"
+	ConnectorReasonValidationFailed             = "ConnectorValidationFailed"
 
 	SetupTestsReasonReconciliationFailed              = "ReconciliationFailed"
 	SetupTestsReasonReconciliationSuccess             = "ReconciledSuccessfully"
@@ -79,4 +78,5 @@ var (
 	ErrVaultClientInitializationFailed = errors.New("failed to initialize vault client")
 	ErrSchemaMismatchAfterRetry        = errors.New("schema still mismatches CR after retry; possible schema config issue")
 	ErrSetupTestsFailed                = errors.New("setup tests failed")
+	ErrConnectorValidationFailed       = errors.New("connector validation failed from annotation")
 )

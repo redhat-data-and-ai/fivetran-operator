@@ -21,6 +21,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -42,6 +43,10 @@ import (
 	"github.com/redhat-data-and-ai/fivetran-operator/internal/controller/fivetranconnector"
 	"github.com/redhat-data-and-ai/fivetran-operator/pkg/fivetran"
 	// +kubebuilder:scaffold:imports
+)
+
+const (
+	defaultMaxConcurrentReconciles = 5
 )
 
 var (
@@ -188,7 +193,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Get max concurrent reconciles from environment variable, default to 5
+	maxConcurrentReconciles := defaultMaxConcurrentReconciles
+	if maxConcurrentReconcilesStr := os.Getenv("MAX_CONCURRENT_RECONCILES"); maxConcurrentReconcilesStr != "" {
+		if parsed, err := strconv.Atoi(maxConcurrentReconcilesStr); err != nil {
+			setupLog.Error(err, "invalid MAX_CONCURRENT_RECONCILES value, using default", "value", maxConcurrentReconcilesStr, "default", defaultMaxConcurrentReconciles)
+		} else if parsed > 0 {
+			maxConcurrentReconciles = parsed
+		} else {
+			setupLog.Info("MAX_CONCURRENT_RECONCILES must be > 0, using default", "value", parsed, "default", defaultMaxConcurrentReconciles)
+		}
+	}
+
 	setupLog.Info("Operator is configured to watch a single namespace", "namespace", watchNamespace)
+	setupLog.Info("Max concurrent reconciles configured", "maxConcurrentReconciles", maxConcurrentReconciles)
 
 	managerOptions := ctrl.Options{
 		Scheme:                 scheme,
@@ -227,9 +245,10 @@ func main() {
 
 	if client != nil {
 		if err = (&fivetranconnector.FivetranConnectorReconciler{
-			Client:         mgr.GetClient(),
-			Scheme:         mgr.GetScheme(),
-			FivetranClient: client,
+			Client:                  mgr.GetClient(),
+			Scheme:                  mgr.GetScheme(),
+			FivetranClient:          client,
+			MaxConcurrentReconciles: maxConcurrentReconciles,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "FivetranConnector")
 			os.Exit(1)
