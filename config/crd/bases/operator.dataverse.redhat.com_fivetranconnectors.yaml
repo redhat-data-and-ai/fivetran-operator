@@ -217,16 +217,6 @@ spec:
                                       type: boolean
                                     is_primary_key:
                                       type: boolean
-                                    masking_algorithm:
-                                      description: The masking algorithm to apply
-                                        to the column data. PLAINTEXT stores data
-                                        as-is, HASHED applies hashing, ENCRYPTED applies
-                                        encryption.
-                                      enum:
-                                      - PLAINTEXT
-                                      - HASHED
-                                      - ENCRYPTED
-                                      type: string
                                   required:
                                   - enabled
                                   type: object

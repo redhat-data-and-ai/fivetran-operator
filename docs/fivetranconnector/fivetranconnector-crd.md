@@ -98,15 +98,6 @@ Each key in the `schemas` map represents a schema name, with the value being a s
 | `enabled` | boolean | **Yes** | Whether this column should be synchronized |
 | `hashed` | boolean | **Yes** | Whether the column data should be hashed |
 | `is_primary_key` | boolean | **Yes** | Whether this column is part of the primary key |
-| `masking_algorithm` | string | No | The masking algorithm to apply to column data |
-
-**Column `masking_algorithm` Values:**
-
-| Value | Description |
-|-------|-------------|
-| `PLAINTEXT` | Stores data as-is without any masking |
-| `HASHED` | Applies hashing to the column data |
-| `ENCRYPTED` | Applies encryption to the column data |
 
 ---
 
