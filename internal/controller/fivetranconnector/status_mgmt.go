@@ -35,6 +35,16 @@ import (
 // handleError handles errors by setting appropriate conditions and updating status
 func (r *FivetranConnectorReconciler) handleError(ctx context.Context, connector *operatorv1alpha1.FivetranConnector, conditionType, reason string, err error) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+
+	// Connector is syncing — mark schema as failed so the granular retry picks it up, then requeue
+	if errors.Is(err, ErrConnectorSyncing) {
+		logger.Info("Connector is syncing, requeueing reconcile", "requeueAfter", "2m")
+		if setErr := r.setCondition(ctx, connector, conditionType, metav1.ConditionFalse, reason, err.Error()); setErr != nil {
+			return ctrl.Result{}, setErr
+		}
+		return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
+	}
+
 	logger.Error(err, "Reconcile failed", "conditionType", conditionType, "reason", reason)
 
 	// Check if the error is a schema configuration error (should not requeue)

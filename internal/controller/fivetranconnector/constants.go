@@ -79,4 +79,5 @@ var (
 	ErrSchemaMismatchAfterRetry        = errors.New("schema still mismatches CR after retry; possible schema config issue")
 	ErrSetupTestsFailed                = errors.New("setup tests failed")
 	ErrConnectorValidationFailed       = errors.New("connector validation failed from annotation")
+	ErrConnectorSyncing                = errors.New("connector is currently syncing, will retry after sync completes")
 )

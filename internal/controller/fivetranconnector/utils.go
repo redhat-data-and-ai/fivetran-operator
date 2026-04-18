@@ -52,15 +52,25 @@ func (r *FivetranConnectorReconciler) ensureFinalizer(ctx context.Context, conne
 func (r *FivetranConnectorReconciler) determineReconciliationNeeds(ctx context.Context, connector *operatorv1alpha1.FivetranConnector, forceReconcile bool) (reconcileConnector, reconcileSchema bool, err error) {
 	logger := log.FromContext(ctx)
 	logger.Info("Determining reconciliation requirements")
-	// Force reconcile or any failed conditions means reconcile everything
-	if forceReconcile || r.hasFailedConditions(connector) {
-		if forceReconcile {
-			logger.Info("Force reconcile requested, reconciling all components")
-		} else {
-			logger.Info("Previous reconcile failed, retrying all components")
-		}
+
+	if forceReconcile {
+		logger.Info("Force reconcile requested, reconciling all components")
 		reconcileConnector = true
 		reconcileSchema = r.hasSchemaConfig(connector)
+		return reconcileConnector, reconcileSchema, nil
+	}
+
+	// For failed conditions, only re-reconcile the components that actually failed
+	if r.hasFailedConditions(connector) {
+		connectorFailed := r.isConditionFalse(connector, conditionTypeConnectorReady)
+		setupTestFailed := r.isConditionFalse(connector, conditionTypeSetupTestReady)
+		schemaFailed := r.isConditionFalse(connector, conditionTypeSchemaReady)
+
+		reconcileConnector = connectorFailed || setupTestFailed
+		reconcileSchema = schemaFailed
+
+		logger.Info("Previous reconcile had failures, retrying failed components",
+			"reconcileConnector", reconcileConnector, "reconcileSchema", reconcileSchema)
 		return reconcileConnector, reconcileSchema, nil
 	}
 
@@ -147,6 +157,16 @@ func (*FivetranConnectorReconciler) hasFailedConditions(connector *operatorv1alp
 
 	for _, condition := range connector.Status.Conditions {
 		if condition.Status == metav1.ConditionFalse {
+			return true
+		}
+	}
+	return false
+}
+
+// isConditionFalse checks if a specific condition is in a failed state
+func (*FivetranConnectorReconciler) isConditionFalse(connector *operatorv1alpha1.FivetranConnector, conditionType string) bool {
+	for _, c := range connector.Status.Conditions {
+		if c.Type == conditionType && c.Status == metav1.ConditionFalse {
 			return true
 		}
 	}

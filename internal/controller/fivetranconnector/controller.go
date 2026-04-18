@@ -93,8 +93,14 @@ func (r *FivetranConnectorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return r.handleError(ctx, connector, conditionTypeConnectorReady, ConnectorReasonFinalizerUpdateFailed, err)
 	}
 
-	// Check force reconcile flag
+	// Check force reconcile flag and remove it immediately so it's not re-read on requeue
 	forceReconcile := kubeutils.HasLabel(connector, annotationForceReconcile)
+	if forceReconcile {
+		kubeutils.RemoveLabel(connector, annotationForceReconcile)
+		if err := r.Update(ctx, connector); err != nil {
+			return r.handleError(ctx, connector, conditionTypeConnectorReady, ConnectorReasonReconciliationFailed, err)
+		}
+	}
 
 	// Determine what needs to be reconciled
 	reconcileConnector, reconcileSchema, err := r.determineReconciliationNeeds(ctx, connector, forceReconcile)
@@ -143,14 +149,14 @@ func (r *FivetranConnectorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if err := r.reconcileSchema(ctx, connector, connectorID); err != nil {
 			return r.handleError(ctx, connector, conditionTypeSchemaReady, SchemaReasonReconciliationFailed, err)
 		}
-	} else {
+	} else if !r.hasSchemaConfig(connector) {
 		if err := r.setCondition(ctx, connector, conditionTypeSchemaReady, metav1.ConditionTrue, SchemaReasonSkipped, msgSchemaSkipped); err != nil {
 			return r.handleError(ctx, connector, conditionTypeSchemaReady, SchemaReasonSkipped, err)
 		}
 	}
 
-	// Update connector again to set ScheduleType and pause state
-	// This is needed because ScheduleType is not available in createconnector API
+	// Update connector again to set ScheduleType and pause state.
+	// This is needed because ScheduleType is not available in the create API.
 	if reconcileConnector {
 		logger.Info("Updating connector again to set ScheduleType and pause state")
 		if err := r.updateConnector(ctx, connector, connectorID, resolvedConfig, resolvedAuth); err != nil {
