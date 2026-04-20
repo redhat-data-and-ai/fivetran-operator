@@ -36,11 +36,31 @@ func getValidationLevel(connector *operatorv1alpha1.FivetranConnector) string {
 	return connector.Spec.ConnectorSchemas.ValidationLevel
 }
 
+// isConnectorSyncing checks if the connector is actively syncing
+func (r *FivetranConnectorReconciler) isConnectorSyncing(ctx context.Context, connectorID string) (bool, error) {
+	resp, err := r.FivetranClient.Connections.GetConnection(ctx, connectorID)
+	if err != nil {
+		return false, fmt.Errorf("isConnectorSyncing: %w", err)
+	}
+	syncState := resp.Data.Status.SyncState
+	log.FromContext(ctx).Info("Checked connector sync state", "syncState", syncState)
+	return syncState == "syncing", nil
+}
+
 // reconcileSchema configures connector schema
 func (r *FivetranConnectorReconciler) reconcileSchema(ctx context.Context, connector *operatorv1alpha1.FivetranConnector, connectorID string) error {
 	logger := log.FromContext(ctx)
 	validationLevel := getValidationLevel(connector)
 	logger.Info("Reconciling schema", "validationLevel", validationLevel)
+
+	// Check if connector is actively syncing before attempting schema changes
+	syncing, err := r.isConnectorSyncing(ctx, connectorID)
+	if err != nil {
+		return fmt.Errorf("reconcileSchema: %w", err)
+	}
+	if syncing {
+		return ErrConnectorSyncing
+	}
 
 	// Get current schema from Fivetran
 	schemaDetails, err := r.FivetranClient.Schemas.GetSchemaDetails(ctx, connectorID)
