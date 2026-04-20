@@ -87,6 +87,11 @@ func (r *FivetranConnectorReconciler) determineReconciliationNeeds(ctx context.C
 
 	reconcileConnector = connectorHashChanged
 	reconcileSchema = schemaHashChanged
+
+	logger.Info("Reconciliation decision",
+		"reconcileConnector", reconcileConnector, "reconcileSchema", reconcileSchema,
+		"connectorHashChanged", connectorHashChanged, "schemaHashChanged", schemaHashChanged,
+		"hasStatusConnectorID", connector.Status.ConnectorID != "")
 	return reconcileConnector, reconcileSchema, nil
 }
 
@@ -300,6 +305,10 @@ func (*FivetranConnectorReconciler) calculateSchemaHash(connector *operatorv1alp
 
 // hasConnectorHashChanged checks if the connector configuration has changed by comparing hashes
 func (r *FivetranConnectorReconciler) hasConnectorHashChanged(connector *operatorv1alpha1.FivetranConnector) (bool, error) {
+	if connector.Status.ConnectorID == "" {
+		return true, nil
+	}
+
 	currentConnectorHash, err := r.calculateConnectorHash(connector)
 	if err != nil {
 		return false, fmt.Errorf("hasConnectorHashChanged: %w", err)
