@@ -18,6 +18,7 @@ package fivetranconnector
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -173,7 +174,9 @@ func (r *FivetranConnectorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-// handleDeletion handles connector deletion
+// handleDeletion handles connector deletion.
+// By default, the Fivetran connector is preserved (orphaned) unless the
+// allow-deletion annotation is explicitly set to "true".
 func (r *FivetranConnectorReconciler) handleDeletion(ctx context.Context, connector *operatorv1alpha1.FivetranConnector) error {
 	logger := log.FromContext(ctx)
 	logger.Info("Handling deletion", "connector", connector.Name, "connectorId", connector.Status.ConnectorID)
@@ -183,11 +186,22 @@ func (r *FivetranConnectorReconciler) handleDeletion(ctx context.Context, connec
 	}
 
 	if connector.Status.ConnectorID != "" {
-		_, err := r.FivetranClient.Connections.DeleteConnection(ctx, connector.Status.ConnectorID)
-		if err != nil {
-			return err
+		allowDeletion := kubeutils.GetAnnotation(connector, annotationAllowDeletion) == "true"
+
+		if allowDeletion {
+			_, err := r.FivetranClient.Connections.DeleteConnection(ctx, connector.Status.ConnectorID)
+			if err != nil {
+				return err
+			}
+			logger.Info("Successfully deleted Fivetran connector", "connectorID", connector.Status.ConnectorID)
+		} else {
+			specJSON, _ := json.Marshal(connector.Spec)
+			logger.Info("Orphaning Fivetran connector: allow-deletion annotation not set",
+				"connector", connector.Name,
+				"connectorID", connector.Status.ConnectorID,
+				"spec", string(specJSON),
+				"hint", "To delete both CR and Fivetran connector, annotate: operator.dataverse.redhat.com/allow-deletion=true")
 		}
-		logger.Info("Successfully deleted Fivetran connector", "connectorID", connector.Status.ConnectorID)
 	}
 
 	controllerutil.RemoveFinalizer(connector, fivetranFinalizer)
