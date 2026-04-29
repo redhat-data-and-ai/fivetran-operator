@@ -24,6 +24,7 @@ const (
 	fivetranConnectorURL = "https://fivetran.com/dashboard/connectors/%s"
 
 	// Annotation constants
+	annotationAllowDeletion  = "operator.dataverse.redhat.com/allow-deletion"
 	annotationForceReconcile = "operator.dataverse.redhat.com/force-reconcile"
 	annotationConnectorHash  = "operator.dataverse.redhat.com/connector-hash"
 	annotationSchemaHash     = "operator.dataverse.redhat.com/schema-hash"
