@@ -47,8 +47,8 @@ func (r *FivetranConnectorReconciler) handleError(ctx context.Context, connector
 
 	logger.Error(err, "Reconcile failed", "conditionType", conditionType, "reason", reason)
 
-	// Check if the error is a schema configuration error (should not requeue)
-	if errors.Is(err, ErrSchemaMismatchAfterRetry) {
+	// Schema mismatch detected after apply — non-retriable, likely a config issue
+	if errors.Is(err, ErrSchemaMismatch) {
 		return ctrl.Result{}, r.setCondition(ctx, connector, conditionType, metav1.ConditionFalse, reason, err.Error())
 	}
 

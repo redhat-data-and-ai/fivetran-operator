@@ -19,6 +19,10 @@ package fivetranconnector
 import "errors"
 
 const (
+	// Validation level constants
+	validationLevelNone   = "NONE"
+	validationLevelTables = "TABLES"
+
 	// Controller constants
 	fivetranFinalizer    = "fivetran.dataverse.redhat.com/finalizer"
 	fivetranConnectorURL = "https://fivetran.com/dashboard/connectors/%s"
@@ -77,7 +81,7 @@ const (
 var (
 	ErrFivetranClientNotInitialized    = errors.New("fivetran client is not initialized")
 	ErrVaultClientInitializationFailed = errors.New("failed to initialize vault client")
-	ErrSchemaMismatchAfterRetry        = errors.New("schema still mismatches CR after retry; possible schema config issue")
+	ErrSchemaMismatch                  = errors.New("schema mismatch detected after apply; possible configuration issue")
 	ErrSetupTestsFailed                = errors.New("setup tests failed")
 	ErrConnectorValidationFailed       = errors.New("connector validation failed from annotation")
 	ErrConnectorSyncing                = errors.New("connector is currently syncing, will retry after sync completes")
