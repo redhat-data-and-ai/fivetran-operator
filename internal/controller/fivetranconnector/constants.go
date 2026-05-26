@@ -82,6 +82,7 @@ var (
 	ErrFivetranClientNotInitialized    = errors.New("fivetran client is not initialized")
 	ErrVaultClientInitializationFailed = errors.New("failed to initialize vault client")
 	ErrSchemaMismatch                  = errors.New("schema mismatch detected after apply; possible configuration issue")
+	ErrLockedColumns                   = errors.New("CR attempts to disable locked columns")
 	ErrSetupTestsFailed                = errors.New("setup tests failed")
 	ErrConnectorValidationFailed       = errors.New("connector validation failed from annotation")
 	ErrConnectorSyncing                = errors.New("connector is currently syncing, will retry after sync completes")

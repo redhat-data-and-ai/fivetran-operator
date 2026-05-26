@@ -21,5 +21,6 @@ type SchemaService interface {
 	CreateSchema(ctx context.Context, connectorID string, builder *SchemaBuilder) (connections.ConnectionSchemaDetailsResponse, error)
 	UpdateSchema(ctx context.Context, ConnectionID string, builder *SchemaBuilder) (connections.ConnectionSchemaDetailsResponse, error)
 	GetSchemaDetails(ctx context.Context, ConnectionID string) (connections.ConnectionSchemaDetailsResponse, error)
+	GetColumnConfig(ctx context.Context, connectionID, schema, table string) (map[string]*connections.ConnectionSchemaConfigColumnResponse, error)
 	ReloadSchema(ctx context.Context, ConnectionID string, excludeMode string) (connections.ConnectionSchemaDetailsResponse, error)
 }

@@ -1,11 +1,40 @@
 package fivetranconnector
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/fivetran/go-fivetran/connections"
 	operatorv1alpha1 "github.com/redhat-data-and-ai/fivetran-operator/api/v1alpha1"
+	"github.com/redhat-data-and-ai/fivetran-operator/pkg/fivetran"
 )
+
+type mockSchemaService struct {
+	columnConfigs map[string]map[string]*connections.ConnectionSchemaConfigColumnResponse
+	callCount     int
+}
+
+func (m *mockSchemaService) CreateSchema(_ context.Context, _ string, _ *fivetran.SchemaBuilder) (connections.ConnectionSchemaDetailsResponse, error) {
+	return connections.ConnectionSchemaDetailsResponse{}, nil
+}
+func (m *mockSchemaService) UpdateSchema(_ context.Context, _ string, _ *fivetran.SchemaBuilder) (connections.ConnectionSchemaDetailsResponse, error) {
+	return connections.ConnectionSchemaDetailsResponse{}, nil
+}
+func (m *mockSchemaService) GetSchemaDetails(_ context.Context, _ string) (connections.ConnectionSchemaDetailsResponse, error) {
+	return connections.ConnectionSchemaDetailsResponse{}, nil
+}
+func (m *mockSchemaService) GetColumnConfig(_ context.Context, _ string, schema, table string) (map[string]*connections.ConnectionSchemaConfigColumnResponse, error) {
+	m.callCount++
+	key := schema + "." + table
+	if cols, ok := m.columnConfigs[key]; ok {
+		return cols, nil
+	}
+	return nil, fmt.Errorf("table not found: %s", key)
+}
+func (m *mockSchemaService) ReloadSchema(_ context.Context, _ string, _ string) (connections.ConnectionSchemaDetailsResponse, error) {
+	return connections.ConnectionSchemaDetailsResponse{}, nil
+}
 
 func boolP(v bool) *bool { return &v }
 
@@ -182,5 +211,223 @@ func makeUpstream(schemas map[string]*connections.ConnectionSchemaConfigSchemaRe
 		}{
 			Schemas: schemas,
 		},
+	}
+}
+
+func strP(v string) *string { return &v }
+
+func TestPopulateColumnsForCR_FetchesWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockSchemaService{
+		columnConfigs: map[string]map[string]*connections.ConnectionSchemaConfigColumnResponse{
+			"public.users": {
+				"id": {
+					Enabled: boolP(true),
+					EnabledPatchSettings: struct {
+						Allowed    *bool   `json:"allowed"`
+						ReasonCode *string `json:"reason_code"`
+						Reason     *string `json:"reason"`
+					}{
+						Allowed:    boolP(false),
+						ReasonCode: strP("SYSTEM_COLUMN"),
+						Reason:     strP("Primary key"),
+					},
+				},
+				"name":  {Enabled: boolP(true)},
+				"email": {Enabled: boolP(true)},
+			},
+		},
+	}
+
+	r := &FivetranConnectorReconciler{
+		FivetranClient: &fivetran.Client{Schemas: mock},
+	}
+
+	upstream := makeUpstream(map[string]*connections.ConnectionSchemaConfigSchemaResponse{
+		"public": {
+			Enabled: boolP(true),
+			Tables: map[string]*connections.ConnectionSchemaConfigTableResponse{
+				"users": {
+					Enabled: boolP(true),
+					Columns: nil, // empty — triggers fetch
+				},
+			},
+		},
+	})
+
+	crSchema := &operatorv1alpha1.ConnectorSchemaConfig{
+		SchemaChangeHandling: "BLOCK_ALL",
+		Schemas: map[string]*operatorv1alpha1.SchemaObject{
+			"public": {
+				Enabled: true,
+				Tables: map[string]*operatorv1alpha1.TableObject{
+					"users": {
+						Enabled: true,
+						Columns: map[string]*operatorv1alpha1.ColumnObject{
+							"name": {Enabled: true},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	err := r.populateColumnsForCR(context.Background(), "conn-123", crSchema, &upstream)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if mock.callCount != 1 {
+		t.Errorf("expected 1 API call, got %d", mock.callCount)
+	}
+
+	cols := upstream.Data.Schemas["public"].Tables["users"].Columns
+	if len(cols) != 3 {
+		t.Fatalf("expected 3 columns populated, got %d", len(cols))
+	}
+	if cols["id"].EnabledPatchSettings.Allowed == nil || *cols["id"].EnabledPatchSettings.Allowed != false {
+		t.Error("expected id column to have enabled_patch_settings.allowed=false")
+	}
+}
+
+func TestPopulateColumnsForCR_SkipsWhenColumnsExist(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockSchemaService{
+		columnConfigs: map[string]map[string]*connections.ConnectionSchemaConfigColumnResponse{},
+	}
+
+	r := &FivetranConnectorReconciler{
+		FivetranClient: &fivetran.Client{Schemas: mock},
+	}
+
+	upstream := makeUpstream(map[string]*connections.ConnectionSchemaConfigSchemaResponse{
+		"public": {
+			Enabled: boolP(true),
+			Tables: map[string]*connections.ConnectionSchemaConfigTableResponse{
+				"users": {
+					Enabled: boolP(true),
+					Columns: map[string]*connections.ConnectionSchemaConfigColumnResponse{
+						"name": {Enabled: boolP(true)},
+					},
+				},
+			},
+		},
+	})
+
+	crSchema := &operatorv1alpha1.ConnectorSchemaConfig{
+		SchemaChangeHandling: "BLOCK_ALL",
+		Schemas: map[string]*operatorv1alpha1.SchemaObject{
+			"public": {
+				Enabled: true,
+				Tables: map[string]*operatorv1alpha1.TableObject{
+					"users": {
+						Enabled: true,
+						Columns: map[string]*operatorv1alpha1.ColumnObject{
+							"name": {Enabled: true},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	err := r.populateColumnsForCR(context.Background(), "conn-123", crSchema, &upstream)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should not call API since columns already exist and CR column is found
+	if mock.callCount != 0 {
+		t.Errorf("expected 0 API calls (columns already present), got %d", mock.callCount)
+	}
+}
+
+func TestPopulateColumnsForCR_FetchesWhenCRColumnMissing(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockSchemaService{
+		columnConfigs: map[string]map[string]*connections.ConnectionSchemaConfigColumnResponse{
+			"public.users": {
+				"id":    {Enabled: boolP(true)},
+				"name":  {Enabled: boolP(true)},
+				"email": {Enabled: boolP(true)},
+			},
+		},
+	}
+
+	r := &FivetranConnectorReconciler{
+		FivetranClient: &fivetran.Client{Schemas: mock},
+	}
+
+	upstream := makeUpstream(map[string]*connections.ConnectionSchemaConfigSchemaResponse{
+		"public": {
+			Enabled: boolP(true),
+			Tables: map[string]*connections.ConnectionSchemaConfigTableResponse{
+				"users": {
+					Enabled: boolP(true),
+					Columns: map[string]*connections.ConnectionSchemaConfigColumnResponse{
+						"id":   {Enabled: boolP(true)},
+						"name": {Enabled: boolP(true)},
+						// "email" missing from schema-level response
+					},
+				},
+			},
+		},
+	})
+
+	crSchema := &operatorv1alpha1.ConnectorSchemaConfig{
+		SchemaChangeHandling: "BLOCK_ALL",
+		Schemas: map[string]*operatorv1alpha1.SchemaObject{
+			"public": {
+				Enabled: true,
+				Tables: map[string]*operatorv1alpha1.TableObject{
+					"users": {
+						Enabled: true,
+						Columns: map[string]*operatorv1alpha1.ColumnObject{
+							"email": {Enabled: true}, // in CR but not in upstream
+						},
+					},
+				},
+			},
+		},
+	}
+
+	err := r.populateColumnsForCR(context.Background(), "conn-123", crSchema, &upstream)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if mock.callCount != 1 {
+		t.Errorf("expected 1 API call (CR column missing from upstream), got %d", mock.callCount)
+	}
+
+	cols := upstream.Data.Schemas["public"].Tables["users"].Columns
+	if len(cols) != 3 {
+		t.Fatalf("expected 3 columns after populate, got %d", len(cols))
+	}
+}
+
+func TestPopulateColumnsForCR_NilInputs(t *testing.T) {
+	t.Parallel()
+
+	r := &FivetranConnectorReconciler{}
+
+	// nil CR
+	err := r.populateColumnsForCR(context.Background(), "conn-123", nil, &connections.ConnectionSchemaDetailsResponse{})
+	if err != nil {
+		t.Fatalf("expected no error for nil CR, got: %v", err)
+	}
+
+	// nil upstream
+	crSchema := &operatorv1alpha1.ConnectorSchemaConfig{
+		Schemas: map[string]*operatorv1alpha1.SchemaObject{
+			"public": {Enabled: true},
+		},
+	}
+	err = r.populateColumnsForCR(context.Background(), "conn-123", crSchema, nil)
+	if err != nil {
+		t.Fatalf("expected no error for nil upstream, got: %v", err)
 	}
 }

@@ -108,9 +108,39 @@ func (r *FivetranConnectorReconciler) reconcileSchema(ctx context.Context, conne
 		}
 	}
 
-	// Apply schema configuration
+	// Populate columns from per-table endpoint for tables that have columns in the CR.
+	// The schema-level GET may not include columns or accurate enabled_patch_settings.
+	if fivetran.NeedsColumnSecondPass(connector.Spec.ConnectorSchemas) {
+		if err := r.populateColumnsForCR(ctx, connectorID, connector.Spec.ConnectorSchemas, &schemaDetails); err != nil {
+			return fmt.Errorf("reconcileSchema: %w", err)
+		}
+
+		// Validate that the CR doesn't try to disable locked columns (primary keys, system columns)
+		if err := fivetran.ValidateLockedColumns(schemaDetails, connector.Spec.ConnectorSchemas); err != nil {
+			return fmt.Errorf("reconcileSchema: %w: %w", ErrLockedColumns, err)
+		}
+	}
+
+	// Apply schema configuration (first pass)
 	if err := r.applySchemaWithMerge(ctx, connector, connectorID, schemaDetails); err != nil {
 		return fmt.Errorf("reconcileSchema: %w", err)
+	}
+
+	// Second pass: after enabling tables, columns become visible in the API response.
+	// Needed when per-table endpoint had no columns (brand-new tables not yet synced).
+	if fivetran.NeedsColumnSecondPass(connector.Spec.ConnectorSchemas) {
+		secondPassDetails, err := r.FivetranClient.Schemas.GetSchemaDetails(ctx, connectorID)
+		if err != nil {
+			return fmt.Errorf("reconcileSchema: failed to get schema details for second pass: %w", err)
+		}
+
+		if err := r.populateColumnsForCR(ctx, connectorID, connector.Spec.ConnectorSchemas, &secondPassDetails); err != nil {
+			return fmt.Errorf("reconcileSchema: second pass populate: %w", err)
+		}
+
+		if err := r.applySchemaWithMerge(ctx, connector, connectorID, secondPassDetails); err != nil {
+			return fmt.Errorf("reconcileSchema: second pass: %w", err)
+		}
 	}
 
 	// Verify schema was applied correctly
@@ -228,5 +258,61 @@ func (r *FivetranConnectorReconciler) createNewSchema(ctx context.Context, conne
 	}
 
 	logger.Info("Schema created successfully", "connectorId", connectorID)
+	return nil
+}
+
+// populateColumnsForCR fetches column data from the per-table endpoint for tables
+// that have columns defined in the CR. This ensures accurate enabled_patch_settings
+// and full column lists are available before the merge engine runs.
+// Mirrors the Terraform provider's validateColumns logic.
+func (r *FivetranConnectorReconciler) populateColumnsForCR(
+	ctx context.Context,
+	connectorID string,
+	crSchema *operatorv1alpha1.ConnectorSchemaConfig,
+	upstream *connections.ConnectionSchemaDetailsResponse,
+) error {
+	if crSchema == nil || upstream == nil {
+		return nil
+	}
+	logger := log.FromContext(ctx)
+
+	for schemaName, schemaObj := range crSchema.Schemas {
+		if schemaObj == nil || !schemaObj.Enabled {
+			continue
+		}
+		upstreamSchema := upstream.Data.Schemas[schemaName]
+		if upstreamSchema == nil {
+			continue
+		}
+		for tableName, tableObj := range schemaObj.Tables {
+			if tableObj == nil || len(tableObj.Columns) == 0 {
+				continue
+			}
+			upstreamTable := upstreamSchema.Tables[tableName]
+			if upstreamTable == nil {
+				continue
+			}
+
+			needsFetch := len(upstreamTable.Columns) == 0
+			if !needsFetch {
+				for colName := range tableObj.Columns {
+					if _, exists := upstreamTable.Columns[colName]; !exists {
+						needsFetch = true
+						break
+					}
+				}
+			}
+
+			if needsFetch {
+				logger.Info("Fetching column config from per-table endpoint",
+					"schema", schemaName, "table", tableName)
+				columns, err := r.FivetranClient.Schemas.GetColumnConfig(ctx, connectorID, schemaName, tableName)
+				if err != nil {
+					return fmt.Errorf("populateColumnsForCR: %w", err)
+				}
+				upstreamTable.Columns = columns
+			}
+		}
+	}
 	return nil
 }

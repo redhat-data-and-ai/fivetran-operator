@@ -1,6 +1,7 @@
 package fivetran
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/fivetran/go-fivetran/connections"
@@ -455,5 +456,374 @@ func TestMergeSchemaWithPolicy_CRSchemaNotInUpstream(t *testing.T) {
 	}
 	if newReq.Tables["new_table"] == nil || *newReq.Tables["new_table"].Enabled != true {
 		t.Error("new_table should be enabled")
+	}
+}
+
+func TestMergeColumns_BlockAll_DisablesUnlisted(t *testing.T) {
+	t.Parallel()
+	upstream := createUpstreamResponse("BLOCK_ALL", map[string]*connections.ConnectionSchemaConfigSchemaResponse{
+		"public": {
+			Enabled: boolPtr(true),
+			Tables: map[string]*connections.ConnectionSchemaConfigTableResponse{
+				"users": {
+					Enabled: boolPtr(true),
+					Columns: map[string]*connections.ConnectionSchemaConfigColumnResponse{
+						"id":         {Enabled: boolPtr(true)},
+						"name":       {Enabled: boolPtr(true)},
+						"email":      {Enabled: boolPtr(true)},
+						"password":   {Enabled: boolPtr(true)},
+						"created_at": {Enabled: boolPtr(true)},
+					},
+				},
+			},
+		},
+	})
+
+	crSchema := &operatorv1alpha1.ConnectorSchemaConfig{
+		SchemaChangeHandling: "BLOCK_ALL",
+		Schemas: map[string]*operatorv1alpha1.SchemaObject{
+			"public": {
+				Enabled: true,
+				Tables: map[string]*operatorv1alpha1.TableObject{
+					"users": {
+						Enabled: true,
+						Columns: map[string]*operatorv1alpha1.ColumnObject{
+							"id":    {Enabled: true},
+							"name":  {Enabled: true},
+							"email": {Enabled: true},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	builder := MergeSchemaWithPolicy(upstream, crSchema)
+	schemas, _, err := builder.Build()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tableReq := schemas["public"].Request().Tables["users"]
+
+	// CR-specified columns should have their state applied
+	if tableReq.Columns["id"] == nil || *tableReq.Columns["id"].Enabled != true {
+		t.Error("id should be enabled")
+	}
+	if tableReq.Columns["name"] == nil || *tableReq.Columns["name"].Enabled != true {
+		t.Error("name should be enabled")
+	}
+	if tableReq.Columns["email"] == nil || *tableReq.Columns["email"].Enabled != true {
+		t.Error("email should be enabled")
+	}
+
+	// Unlisted upstream columns should be disabled under BLOCK_ALL
+	if tableReq.Columns["password"] == nil || *tableReq.Columns["password"].Enabled != false {
+		t.Error("password should be disabled (not in CR, BLOCK_ALL)")
+	}
+	if tableReq.Columns["created_at"] == nil || *tableReq.Columns["created_at"].Enabled != false {
+		t.Error("created_at should be disabled (not in CR, BLOCK_ALL)")
+	}
+}
+
+func TestMergeColumns_AllowColumns_KeepsUnlistedEnabled(t *testing.T) {
+	t.Parallel()
+	upstream := createUpstreamResponse("ALLOW_COLUMNS", map[string]*connections.ConnectionSchemaConfigSchemaResponse{
+		"public": {
+			Enabled: boolPtr(true),
+			Tables: map[string]*connections.ConnectionSchemaConfigTableResponse{
+				"users": {
+					Enabled: boolPtr(true),
+					Columns: map[string]*connections.ConnectionSchemaConfigColumnResponse{
+						"id":       {Enabled: boolPtr(true)},
+						"name":     {Enabled: boolPtr(true)},
+						"email":    {Enabled: boolPtr(true)},
+						"password": {Enabled: boolPtr(true)},
+						"ssn":      {Enabled: boolPtr(true)},
+					},
+				},
+			},
+		},
+	})
+
+	crSchema := &operatorv1alpha1.ConnectorSchemaConfig{
+		SchemaChangeHandling: "ALLOW_COLUMNS",
+		Schemas: map[string]*operatorv1alpha1.SchemaObject{
+			"public": {
+				Enabled: true,
+				Tables: map[string]*operatorv1alpha1.TableObject{
+					"users": {
+						Enabled: true,
+						Columns: map[string]*operatorv1alpha1.ColumnObject{
+							"password": {Enabled: false},
+							"ssn":      {Enabled: false},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	builder := MergeSchemaWithPolicy(upstream, crSchema)
+	schemas, _, err := builder.Build()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tableReq := schemas["public"].Request().Tables["users"]
+
+	// Explicitly disabled columns in CR
+	if tableReq.Columns["password"] == nil || *tableReq.Columns["password"].Enabled != false {
+		t.Error("password should be disabled (explicit in CR)")
+	}
+	if tableReq.Columns["ssn"] == nil || *tableReq.Columns["ssn"].Enabled != false {
+		t.Error("ssn should be disabled (explicit in CR)")
+	}
+
+	// Unlisted columns should be enabled under ALLOW_COLUMNS
+	if tableReq.Columns["id"] == nil || *tableReq.Columns["id"].Enabled != true {
+		t.Error("id should be enabled (not in CR, ALLOW_COLUMNS)")
+	}
+	if tableReq.Columns["name"] == nil || *tableReq.Columns["name"].Enabled != true {
+		t.Error("name should be enabled (not in CR, ALLOW_COLUMNS)")
+	}
+	if tableReq.Columns["email"] == nil || *tableReq.Columns["email"].Enabled != true {
+		t.Error("email should be enabled (not in CR, ALLOW_COLUMNS)")
+	}
+}
+
+func TestMergeColumns_NoColumnsInCR_SkipsColumnMerge(t *testing.T) {
+	t.Parallel()
+	upstream := createUpstreamResponse("BLOCK_ALL", map[string]*connections.ConnectionSchemaConfigSchemaResponse{
+		"public": {
+			Enabled: boolPtr(true),
+			Tables: map[string]*connections.ConnectionSchemaConfigTableResponse{
+				"users": {
+					Enabled: boolPtr(true),
+					Columns: map[string]*connections.ConnectionSchemaConfigColumnResponse{
+						"id":    {Enabled: boolPtr(true)},
+						"name":  {Enabled: boolPtr(true)},
+						"email": {Enabled: boolPtr(true)},
+					},
+				},
+			},
+		},
+	})
+
+	// Table enabled but no columns block — should not touch columns
+	crSchema := &operatorv1alpha1.ConnectorSchemaConfig{
+		SchemaChangeHandling: "BLOCK_ALL",
+		Schemas: map[string]*operatorv1alpha1.SchemaObject{
+			"public": {
+				Enabled: true,
+				Tables: map[string]*operatorv1alpha1.TableObject{
+					"users": {Enabled: true},
+				},
+			},
+		},
+	}
+
+	builder := MergeSchemaWithPolicy(upstream, crSchema)
+	schemas, _, err := builder.Build()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tableReq := schemas["public"].Request().Tables["users"]
+
+	// No columns should be in the payload when CR has no columns block
+	if len(tableReq.Columns) != 0 {
+		t.Errorf("expected 0 columns in payload (no columns in CR), got %d", len(tableReq.Columns))
+	}
+}
+
+func TestMergeColumns_LockedColumn_SkipsDisable(t *testing.T) {
+	t.Parallel()
+	upstream := createUpstreamResponse("BLOCK_ALL", map[string]*connections.ConnectionSchemaConfigSchemaResponse{
+		"public": {
+			Enabled: boolPtr(true),
+			Tables: map[string]*connections.ConnectionSchemaConfigTableResponse{
+				"users": {
+					Enabled: boolPtr(true),
+					Columns: map[string]*connections.ConnectionSchemaConfigColumnResponse{
+						"id": {
+							Enabled: boolPtr(true),
+							EnabledPatchSettings: struct {
+								Allowed    *bool   `json:"allowed"`
+								ReasonCode *string `json:"reason_code"`
+								Reason     *string `json:"reason"`
+							}{
+								Allowed:    boolPtr(false),
+								ReasonCode: strPtr("PRIMARY_KEY"),
+								Reason:     strPtr("Primary key cannot be disabled"),
+							},
+						},
+						"name":  {Enabled: boolPtr(true)},
+						"email": {Enabled: boolPtr(true)},
+					},
+				},
+			},
+		},
+	})
+
+	crSchema := &operatorv1alpha1.ConnectorSchemaConfig{
+		SchemaChangeHandling: "BLOCK_ALL",
+		Schemas: map[string]*operatorv1alpha1.SchemaObject{
+			"public": {
+				Enabled: true,
+				Tables: map[string]*operatorv1alpha1.TableObject{
+					"users": {
+						Enabled: true,
+						Columns: map[string]*operatorv1alpha1.ColumnObject{
+							"name": {Enabled: true},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	builder := MergeSchemaWithPolicy(upstream, crSchema)
+	schemas, _, err := builder.Build()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tableReq := schemas["public"].Request().Tables["users"]
+
+	// name is in CR — enabled
+	if tableReq.Columns["name"] == nil || *tableReq.Columns["name"].Enabled != true {
+		t.Error("name should be enabled (in CR)")
+	}
+
+	// email is not in CR — disabled under BLOCK_ALL
+	if tableReq.Columns["email"] == nil || *tableReq.Columns["email"].Enabled != false {
+		t.Error("email should be disabled (not in CR, BLOCK_ALL)")
+	}
+
+	// id is locked — should NOT be in payload
+	if _, exists := tableReq.Columns["id"]; exists {
+		t.Error("id should NOT be in payload (locked column, patch not allowed)")
+	}
+}
+
+func TestValidateLockedColumns_ReturnsError(t *testing.T) {
+	t.Parallel()
+	upstream := createUpstreamResponse("BLOCK_ALL", map[string]*connections.ConnectionSchemaConfigSchemaResponse{
+		"public": {
+			Enabled: boolPtr(true),
+			Tables: map[string]*connections.ConnectionSchemaConfigTableResponse{
+				"users": {
+					Enabled: boolPtr(true),
+					Columns: map[string]*connections.ConnectionSchemaConfigColumnResponse{
+						"id": {
+							Enabled: boolPtr(true),
+							EnabledPatchSettings: struct {
+								Allowed    *bool   `json:"allowed"`
+								ReasonCode *string `json:"reason_code"`
+								Reason     *string `json:"reason"`
+							}{
+								Allowed:    boolPtr(false),
+								ReasonCode: strPtr("SYSTEM_COLUMN"),
+								Reason:     strPtr("Primary key column"),
+							},
+						},
+						"name":  {Enabled: boolPtr(true)},
+						"email": {Enabled: boolPtr(true)},
+					},
+				},
+			},
+		},
+	})
+
+	crSchema := &operatorv1alpha1.ConnectorSchemaConfig{
+		SchemaChangeHandling: "BLOCK_ALL",
+		Schemas: map[string]*operatorv1alpha1.SchemaObject{
+			"public": {
+				Enabled: true,
+				Tables: map[string]*operatorv1alpha1.TableObject{
+					"users": {
+						Enabled: true,
+						Columns: map[string]*operatorv1alpha1.ColumnObject{
+							"id":   {Enabled: false}, // locked — should fail
+							"name": {Enabled: true},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	err := ValidateLockedColumns(upstream, crSchema)
+	if err == nil {
+		t.Fatal("expected error for locked column, got nil")
+	}
+	if !strings.Contains(err.Error(), "public.users.id") {
+		t.Errorf("expected error to mention public.users.id, got: %s", err.Error())
+	}
+	if !strings.Contains(err.Error(), "SYSTEM_COLUMN") {
+		t.Errorf("expected error to mention SYSTEM_COLUMN, got: %s", err.Error())
+	}
+}
+
+func TestValidateLockedColumns_NoError_WhenColumnsEnabled(t *testing.T) {
+	t.Parallel()
+	upstream := createUpstreamResponse("BLOCK_ALL", map[string]*connections.ConnectionSchemaConfigSchemaResponse{
+		"public": {
+			Enabled: boolPtr(true),
+			Tables: map[string]*connections.ConnectionSchemaConfigTableResponse{
+				"users": {
+					Enabled: boolPtr(true),
+					Columns: map[string]*connections.ConnectionSchemaConfigColumnResponse{
+						"id": {
+							Enabled: boolPtr(true),
+							EnabledPatchSettings: struct {
+								Allowed    *bool   `json:"allowed"`
+								ReasonCode *string `json:"reason_code"`
+								Reason     *string `json:"reason"`
+							}{
+								Allowed:    boolPtr(false),
+								ReasonCode: strPtr("SYSTEM_COLUMN"),
+								Reason:     strPtr("Primary key column"),
+							},
+						},
+						"name": {Enabled: boolPtr(true)},
+					},
+				},
+			},
+		},
+	})
+
+	// CR enables the locked column (not trying to disable it) — should pass
+	crSchema := &operatorv1alpha1.ConnectorSchemaConfig{
+		SchemaChangeHandling: "BLOCK_ALL",
+		Schemas: map[string]*operatorv1alpha1.SchemaObject{
+			"public": {
+				Enabled: true,
+				Tables: map[string]*operatorv1alpha1.TableObject{
+					"users": {
+						Enabled: true,
+						Columns: map[string]*operatorv1alpha1.ColumnObject{
+							"id":   {Enabled: true},
+							"name": {Enabled: true},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	err := ValidateLockedColumns(upstream, crSchema)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestValidateLockedColumns_NilCR(t *testing.T) {
+	t.Parallel()
+	upstream := createUpstreamResponse("BLOCK_ALL", nil)
+	err := ValidateLockedColumns(upstream, nil)
+	if err != nil {
+		t.Fatalf("expected no error for nil CR, got: %v", err)
 	}
 }

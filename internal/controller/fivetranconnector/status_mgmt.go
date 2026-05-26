@@ -52,6 +52,11 @@ func (r *FivetranConnectorReconciler) handleError(ctx context.Context, connector
 		return ctrl.Result{}, r.setCondition(ctx, connector, conditionType, metav1.ConditionFalse, reason, err.Error())
 	}
 
+	// Locked columns — non-retriable, CR must be fixed by the user
+	if errors.Is(err, ErrLockedColumns) {
+		return ctrl.Result{}, r.setCondition(ctx, connector, conditionType, metav1.ConditionFalse, reason, err.Error())
+	}
+
 	// Check if the error is a setup test error (should not requeue)
 	if errors.Is(err, ErrSetupTestsFailed) {
 		// Set connector ready condition to true because setup tests failed after connector reconciliation was successful
