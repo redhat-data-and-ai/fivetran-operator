@@ -61,14 +61,47 @@ sequenceDiagram
 
     %% 8. Schema Configuration (Optional)
     alt Schema config provided
-        R->>F: Get Current Schema
-        F-->>R: Schema Details
-        
-        alt Schema needs update
-            R->>F: Reload & Update Schema
+        R->>F: Get Schema Details
+        F-->>R: Schema Details (or not found)
+
+        alt Schema not found
+            R->>F: Reload Schema (discover from source)
+            F-->>R: Reload Success
+            R->>F: Get Schema Details
+            F-->>R: Schema Details
+        else CR references unknown schemas/tables
+            R->>F: Reload Schema
+            F-->>R: Reload Success
+            R->>F: Get Schema Details
+            F-->>R: Updated Schema Details
+        end
+
+        alt CR has column configs (BLOCK_ALL/ALLOW_COLUMNS)
+            R->>F: Get Column Config (per-table endpoint)
+            F-->>R: Column details + enabled_patch_settings
+            R->>R: Validate locked columns
+        end
+
+        R->>R: BuildSchemaConfig(cr, upstream)
+        R->>F: Update Schema (first pass)
+        F-->>R: Schema Updated
+
+        alt Columns were missing (brand-new tables)
+            R->>F: Get Schema Details (second pass)
+            F-->>R: Updated Schema with columns
+            R->>F: Get Column Config (per-table)
+            F-->>R: Column details
+            R->>R: BuildSchemaConfig(cr, upstream)
+            R->>F: Update Schema (second pass)
             F-->>R: Schema Updated
         end
-        
+
+        alt Validation enabled
+            R->>F: Get Schema Details (verify)
+            F-->>R: Final Schema State
+            R->>R: CompareSchemaWithCR
+        end
+
         R->>K8s: Update Schema Status
     end
 
@@ -113,9 +146,11 @@ The FivetranConnector reconciliation follows these **9 main phases**:
 - Reports test results in connector status
 
 ### 8. **Schema Configuration** _(Optional)_
-- Manages table/column selection and sync settings
-- Reloads schema from source if needed
-- Applies user-defined schema configuration
+- Gets current schema from Fivetran; reloads if not found or CR references undiscovered items
+- For `BLOCK_ALL`/`ALLOW_COLUMNS` policies with column configs: fetches per-table column data and validates locked columns
+- Builds schema payload via `BuildSchemaConfig(cr, upstream)` enforcing `schema_change_handling` policy
+- Applies schema (first pass); if columns were missing (brand-new tables), runs a second pass after columns become visible
+- Verifies final schema state matches the CR (when validation is enabled)
 
 ### 9. **Final Steps**
 - Removes temporary annotations and labels
@@ -126,4 +161,6 @@ The FivetranConnector reconciliation follows these **9 main phases**:
 
 - **Smart Change Detection**: Only reconciles when changes are detected
 - **Secure Secret Management**: Integration with Vault for credentials
-- **Error Handling**: Proper status reporting and retry logic
+- **Policy Enforcement**: `schema_change_handling` enforced at schema, table, and column levels
+- **Locked Column Safety**: Non-retriable error if CR attempts to disable primary keys or system columns
+- **Error Handling**: Proper status reporting; non-retriable errors (locked columns, schema mismatch) stop the reconcile loop
