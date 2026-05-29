@@ -167,7 +167,7 @@ func (r *FivetranConnectorReconciler) reconcileSchema(ctx context.Context, conne
 }
 
 // reloadSchema discovers or refreshes the schema from the source.
-// Uses exclude_mode=PRESERVE — the merge engine handles enable/disable state.
+// Uses exclude_mode=PRESERVE — BuildSchemaConfig handles enable/disable state.
 func (r *FivetranConnectorReconciler) reloadSchema(ctx context.Context, connectorID string) error {
 	logger := log.FromContext(ctx)
 
@@ -208,7 +208,7 @@ func validateCRAgainstUpstream(crSchema *operatorv1alpha1.ConnectorSchemaConfig,
 	return false
 }
 
-// applySchema applies schema configuration using the merge engine
+// applySchema applies schema configuration using BuildSchemaConfig
 func (r *FivetranConnectorReconciler) applySchema(ctx context.Context, connector *operatorv1alpha1.FivetranConnector, connectorID string, upstream connections.ConnectionSchemaDetailsResponse) error {
 	logger := log.FromContext(ctx)
 	schemaChangeHandling := ""
@@ -263,7 +263,7 @@ func (r *FivetranConnectorReconciler) createNewSchema(ctx context.Context, conne
 
 // populateColumnsForCR fetches column data from the per-table endpoint for tables
 // that have columns defined in the CR. This ensures accurate enabled_patch_settings
-// and full column lists are available before the merge engine runs.
+// and full column lists are available before BuildSchemaConfig runs.
 // Mirrors the Terraform provider's validateColumns logic.
 // Returns true if any columns were fetched (i.e., upstream was incomplete).
 func (r *FivetranConnectorReconciler) populateColumnsForCR(
