@@ -122,7 +122,7 @@ func (r *FivetranConnectorReconciler) reconcileSchema(ctx context.Context, conne
 	}
 
 	// Apply schema configuration (first pass)
-	if err := r.applySchemaWithMerge(ctx, connector, connectorID, schemaDetails); err != nil {
+	if err := r.applySchema(ctx, connector, connectorID, schemaDetails); err != nil {
 		return fmt.Errorf("reconcileSchema: %w", err)
 	}
 
@@ -138,7 +138,7 @@ func (r *FivetranConnectorReconciler) reconcileSchema(ctx context.Context, conne
 			return fmt.Errorf("reconcileSchema: second pass populate: %w", err)
 		}
 
-		if err := r.applySchemaWithMerge(ctx, connector, connectorID, secondPassDetails); err != nil {
+		if err := r.applySchema(ctx, connector, connectorID, secondPassDetails); err != nil {
 			return fmt.Errorf("reconcileSchema: second pass: %w", err)
 		}
 	}
@@ -205,8 +205,8 @@ func validateCRAgainstUpstream(crSchema *operatorv1alpha1.ConnectorSchemaConfig,
 	return false
 }
 
-// applySchemaWithMerge applies schema configuration using the merge engine
-func (r *FivetranConnectorReconciler) applySchemaWithMerge(ctx context.Context, connector *operatorv1alpha1.FivetranConnector, connectorID string, upstream connections.ConnectionSchemaDetailsResponse) error {
+// applySchema applies schema configuration using the merge engine
+func (r *FivetranConnectorReconciler) applySchema(ctx context.Context, connector *operatorv1alpha1.FivetranConnector, connectorID string, upstream connections.ConnectionSchemaDetailsResponse) error {
 	logger := log.FromContext(ctx)
 	policy := ""
 	if connector.Spec.ConnectorSchemas != nil {
@@ -215,12 +215,11 @@ func (r *FivetranConnectorReconciler) applySchemaWithMerge(ctx context.Context, 
 	logger.Info("Applying schema configuration with policy merge", "connectorId", connectorID,
 		"schemaChangeHandling", policy)
 
-	// Build() is called inside UpdateSchema; build errors surface as "failed to build schema config"
-	schema := fivetran.MergeSchemaWithPolicy(upstream, connector.Spec.ConnectorSchemas)
+	schema := fivetran.BuildSchemaConfig(connector.Spec.ConnectorSchemas, &upstream)
 
 	_, err := r.FivetranClient.Schemas.UpdateSchema(ctx, connectorID, schema)
 	if err != nil {
-		return fmt.Errorf("applySchemaWithMerge: %w", err)
+		return fmt.Errorf("applySchema: %w", err)
 	}
 
 	return r.updateSchemaHash(ctx, connector)
@@ -242,9 +241,7 @@ func (r *FivetranConnectorReconciler) createNewSchema(ctx context.Context, conne
 	logger := log.FromContext(ctx)
 	logger.Info("Creating new schema without validation", "connectorId", connectorID)
 
-	// Uses convertSchema (not MergeSchemaWithPolicy) because there is no upstream state to merge
-	// with — the schema doesn't exist yet and validation_level=NONE skips reload/discovery.
-	schema := r.convertSchema(connector.Spec.ConnectorSchemas)
+	schema := fivetran.BuildSchemaConfig(connector.Spec.ConnectorSchemas, nil)
 
 	// Use CreateSchema API which creates schema config without requiring schema reload
 	_, err := r.FivetranClient.Schemas.CreateSchema(ctx, connectorID, schema)
