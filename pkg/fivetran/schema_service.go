@@ -41,7 +41,6 @@ func (s *schemaServiceImpl) CreateSchema(ctx context.Context, ConnectionID strin
 
 // UpdateSchema updates the schema configuration for a Connection
 func (s *schemaServiceImpl) UpdateSchema(ctx context.Context, ConnectionID string, builder *SchemaBuilder) (connections.ConnectionSchemaDetailsResponse, error) {
-	fivetran.Debug(true)
 	schemas, schemaChangeHandling, err := builder.Build()
 	if err != nil {
 		return connections.ConnectionSchemaDetailsResponse{}, fmt.Errorf("failed to build schema config: %w", err)

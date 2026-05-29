@@ -110,8 +110,11 @@ func (r *FivetranConnectorReconciler) reconcileSchema(ctx context.Context, conne
 
 	// Populate columns from per-table endpoint for tables that have columns in the CR.
 	// The schema-level GET may not include columns or accurate enabled_patch_settings.
+	columnsWereMissing := false
 	if fivetran.NeedsColumnSecondPass(connector.Spec.ConnectorSchemas) {
-		if err := r.populateColumnsForCR(ctx, connectorID, connector.Spec.ConnectorSchemas, &schemaDetails); err != nil {
+		var err error
+		columnsWereMissing, err = r.populateColumnsForCR(ctx, connectorID, connector.Spec.ConnectorSchemas, &schemaDetails)
+		if err != nil {
 			return fmt.Errorf("reconcileSchema: %w", err)
 		}
 
@@ -127,14 +130,14 @@ func (r *FivetranConnectorReconciler) reconcileSchema(ctx context.Context, conne
 	}
 
 	// Second pass: after enabling tables, columns become visible in the API response.
-	// Needed when per-table endpoint had no columns (brand-new tables not yet synced).
-	if fivetran.NeedsColumnSecondPass(connector.Spec.ConnectorSchemas) {
+	// Only needed when the first pass had incomplete column data (brand-new tables not yet synced).
+	if columnsWereMissing {
 		secondPassDetails, err := r.FivetranClient.Schemas.GetSchemaDetails(ctx, connectorID)
 		if err != nil {
 			return fmt.Errorf("reconcileSchema: failed to get schema details for second pass: %w", err)
 		}
 
-		if err := r.populateColumnsForCR(ctx, connectorID, connector.Spec.ConnectorSchemas, &secondPassDetails); err != nil {
+		if _, err := r.populateColumnsForCR(ctx, connectorID, connector.Spec.ConnectorSchemas, &secondPassDetails); err != nil {
 			return fmt.Errorf("reconcileSchema: second pass populate: %w", err)
 		}
 
@@ -208,12 +211,12 @@ func validateCRAgainstUpstream(crSchema *operatorv1alpha1.ConnectorSchemaConfig,
 // applySchema applies schema configuration using the merge engine
 func (r *FivetranConnectorReconciler) applySchema(ctx context.Context, connector *operatorv1alpha1.FivetranConnector, connectorID string, upstream connections.ConnectionSchemaDetailsResponse) error {
 	logger := log.FromContext(ctx)
-	policy := ""
+	schemaChangeHandling := ""
 	if connector.Spec.ConnectorSchemas != nil {
-		policy = connector.Spec.ConnectorSchemas.SchemaChangeHandling
+		schemaChangeHandling = connector.Spec.ConnectorSchemas.SchemaChangeHandling
 	}
 	logger.Info("Applying schema configuration with policy merge", "connectorId", connectorID,
-		"schemaChangeHandling", policy)
+		"schemaChangeHandling", schemaChangeHandling)
 
 	schema := fivetran.BuildSchemaConfig(connector.Spec.ConnectorSchemas, &upstream)
 
@@ -262,16 +265,18 @@ func (r *FivetranConnectorReconciler) createNewSchema(ctx context.Context, conne
 // that have columns defined in the CR. This ensures accurate enabled_patch_settings
 // and full column lists are available before the merge engine runs.
 // Mirrors the Terraform provider's validateColumns logic.
+// Returns true if any columns were fetched (i.e., upstream was incomplete).
 func (r *FivetranConnectorReconciler) populateColumnsForCR(
 	ctx context.Context,
 	connectorID string,
 	crSchema *operatorv1alpha1.ConnectorSchemaConfig,
 	upstream *connections.ConnectionSchemaDetailsResponse,
-) error {
+) (bool, error) {
 	if crSchema == nil || upstream == nil {
-		return nil
+		return false, nil
 	}
 	logger := log.FromContext(ctx)
+	fetched := false
 
 	for schemaName, schemaObj := range crSchema.Schemas {
 		if schemaObj == nil || !schemaObj.Enabled {
@@ -279,6 +284,8 @@ func (r *FivetranConnectorReconciler) populateColumnsForCR(
 		}
 		upstreamSchema := upstream.Data.Schemas[schemaName]
 		if upstreamSchema == nil {
+			logger.V(1).Info("CR references schema not found upstream, skipping column population",
+				"schema", schemaName)
 			continue
 		}
 		for tableName, tableObj := range schemaObj.Tables {
@@ -287,6 +294,8 @@ func (r *FivetranConnectorReconciler) populateColumnsForCR(
 			}
 			upstreamTable := upstreamSchema.Tables[tableName]
 			if upstreamTable == nil {
+				logger.V(1).Info("CR references table not found upstream, skipping column population",
+					"schema", schemaName, "table", tableName)
 				continue
 			}
 
@@ -305,11 +314,12 @@ func (r *FivetranConnectorReconciler) populateColumnsForCR(
 					"schema", schemaName, "table", tableName)
 				columns, err := r.FivetranClient.Schemas.GetColumnConfig(ctx, connectorID, schemaName, tableName)
 				if err != nil {
-					return fmt.Errorf("populateColumnsForCR: %w", err)
+					return false, fmt.Errorf("populateColumnsForCR: %w", err)
 				}
 				upstreamTable.Columns = columns
+				fetched = true
 			}
 		}
 	}
-	return nil
+	return fetched, nil
 }

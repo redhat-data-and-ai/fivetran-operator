@@ -3,6 +3,7 @@ package fivetran
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/fivetran/go-fivetran/connections"
@@ -48,6 +49,7 @@ func BuildSchemaConfig(
 	}
 
 	policy := cr.SchemaChangeHandling
+	// Empty policy defaults to ALLOW_ALL behavior (no merge needed, just pass CR through)
 	if upstream == nil || policy == policyAllowAll || policy == "" {
 		builder.fromCR(cr)
 	} else {
@@ -390,6 +392,7 @@ func ValidateLockedColumns(
 	}
 
 	if len(violations) > 0 {
+		sort.Strings(violations)
 		return fmt.Errorf("%s", strings.Join(violations, ", "))
 	}
 	return nil

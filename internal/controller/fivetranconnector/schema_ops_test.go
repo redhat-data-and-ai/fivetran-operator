@@ -273,9 +273,12 @@ func TestPopulateColumnsForCR_FetchesWhenEmpty(t *testing.T) {
 		},
 	}
 
-	err := r.populateColumnsForCR(context.Background(), "conn-123", crSchema, &upstream)
+	fetched, err := r.populateColumnsForCR(context.Background(), "conn-123", crSchema, &upstream)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !fetched {
+		t.Error("expected fetched=true when columns were missing")
 	}
 
 	if mock.callCount != 1 {
@@ -333,9 +336,12 @@ func TestPopulateColumnsForCR_SkipsWhenColumnsExist(t *testing.T) {
 		},
 	}
 
-	err := r.populateColumnsForCR(context.Background(), "conn-123", crSchema, &upstream)
+	fetched, err := r.populateColumnsForCR(context.Background(), "conn-123", crSchema, &upstream)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if fetched {
+		t.Error("expected fetched=false when columns already present")
 	}
 
 	// Should not call API since columns already exist and CR column is found
@@ -394,9 +400,12 @@ func TestPopulateColumnsForCR_FetchesWhenCRColumnMissing(t *testing.T) {
 		},
 	}
 
-	err := r.populateColumnsForCR(context.Background(), "conn-123", crSchema, &upstream)
+	fetched, err := r.populateColumnsForCR(context.Background(), "conn-123", crSchema, &upstream)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !fetched {
+		t.Error("expected fetched=true when CR column missing from upstream")
 	}
 
 	if mock.callCount != 1 {
@@ -415,7 +424,7 @@ func TestPopulateColumnsForCR_NilInputs(t *testing.T) {
 	r := &FivetranConnectorReconciler{}
 
 	// nil CR
-	err := r.populateColumnsForCR(context.Background(), "conn-123", nil, &connections.ConnectionSchemaDetailsResponse{})
+	_, err := r.populateColumnsForCR(context.Background(), "conn-123", nil, &connections.ConnectionSchemaDetailsResponse{})
 	if err != nil {
 		t.Fatalf("expected no error for nil CR, got: %v", err)
 	}
@@ -426,7 +435,7 @@ func TestPopulateColumnsForCR_NilInputs(t *testing.T) {
 			"public": {Enabled: true},
 		},
 	}
-	err = r.populateColumnsForCR(context.Background(), "conn-123", crSchema, nil)
+	_, err = r.populateColumnsForCR(context.Background(), "conn-123", crSchema, nil)
 	if err != nil {
 		t.Fatalf("expected no error for nil upstream, got: %v", err)
 	}
