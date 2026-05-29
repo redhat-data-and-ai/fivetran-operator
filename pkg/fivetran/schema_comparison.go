@@ -87,7 +87,7 @@ func CompareSchemaWithCR(fivetranSchema connections.ConnectionSchemaDetailsRespo
 			continue
 		}
 		fivetranSchemaObj, exists := fivetranSchema.Data.Schemas[crSchemaName]
-		if !exists {
+		if !exists || fivetranSchemaObj == nil {
 			if !crSchemaObj.Enabled {
 				continue
 			}
@@ -126,7 +126,7 @@ func compareTablesWithFivetran(fivetranTables map[string]*connections.Connection
 			continue
 		}
 		fivetranTableObj, exists := fivetranTables[crTableName]
-		if !exists {
+		if !exists || fivetranTableObj == nil {
 			if !crTableObj.Enabled {
 				continue
 			}
