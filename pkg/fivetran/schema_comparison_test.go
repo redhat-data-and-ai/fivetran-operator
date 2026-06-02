@@ -256,6 +256,103 @@ func TestCompareSchemaWithCR(t *testing.T) {
 	}
 }
 
+func TestCompareSchemaWithCR_DisabledNotFoundIsNotMismatch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		crSchema    *operatorv1alpha1.ConnectorSchemaConfig
+		upstream    connections.ConnectionSchemaDetailsResponse
+		expectMatch bool
+	}{
+		{
+			name: "disabled schema not found upstream is not a mismatch",
+			crSchema: &operatorv1alpha1.ConnectorSchemaConfig{
+				SchemaChangeHandling: "ALLOW_ALL",
+				Schemas: map[string]*operatorv1alpha1.SchemaObject{
+					"missing_schema": {Enabled: false},
+				},
+			},
+			upstream:    createSchemaResponse(map[string]*connections.ConnectionSchemaConfigSchemaResponse{}),
+			expectMatch: true,
+		},
+		{
+			name: "enabled schema not found upstream is a mismatch",
+			crSchema: &operatorv1alpha1.ConnectorSchemaConfig{
+				SchemaChangeHandling: "ALLOW_ALL",
+				Schemas: map[string]*operatorv1alpha1.SchemaObject{
+					"missing_schema": {Enabled: true},
+				},
+			},
+			upstream:    createSchemaResponse(map[string]*connections.ConnectionSchemaConfigSchemaResponse{}),
+			expectMatch: false,
+		},
+		{
+			name: "disabled table not found upstream is not a mismatch",
+			crSchema: &operatorv1alpha1.ConnectorSchemaConfig{
+				SchemaChangeHandling: "ALLOW_ALL",
+				Schemas: map[string]*operatorv1alpha1.SchemaObject{
+					"my_schema": {
+						Enabled: true,
+						Tables: map[string]*operatorv1alpha1.TableObject{
+							"missing_table": {Enabled: false},
+						},
+					},
+				},
+			},
+			upstream: createSchemaResponse(map[string]*connections.ConnectionSchemaConfigSchemaResponse{
+				"my_schema": {
+					Enabled: boolPtr(true),
+					Tables:  map[string]*connections.ConnectionSchemaConfigTableResponse{},
+				},
+			}),
+			expectMatch: true,
+		},
+		{
+			name: "enabled table not found upstream is a mismatch",
+			crSchema: &operatorv1alpha1.ConnectorSchemaConfig{
+				SchemaChangeHandling: "ALLOW_ALL",
+				Schemas: map[string]*operatorv1alpha1.SchemaObject{
+					"my_schema": {
+						Enabled: true,
+						Tables: map[string]*operatorv1alpha1.TableObject{
+							"missing_table": {Enabled: true},
+						},
+					},
+				},
+			},
+			upstream: createSchemaResponse(map[string]*connections.ConnectionSchemaConfigSchemaResponse{
+				"my_schema": {
+					Enabled: boolPtr(true),
+					Tables:  map[string]*connections.ConnectionSchemaConfigTableResponse{},
+				},
+			}),
+			expectMatch: false,
+		},
+		{
+			name: "nil CR schema object is skipped",
+			crSchema: &operatorv1alpha1.ConnectorSchemaConfig{
+				SchemaChangeHandling: "ALLOW_ALL",
+				Schemas: map[string]*operatorv1alpha1.SchemaObject{
+					"nil_schema": nil,
+				},
+			},
+			upstream:    createSchemaResponse(map[string]*connections.ConnectionSchemaConfigSchemaResponse{}),
+			expectMatch: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			matches, mismatch := CompareSchemaWithCR(tt.upstream, tt.crSchema)
+			if matches != tt.expectMatch {
+				t.Errorf("CompareSchemaWithCR() = %v, want %v; details: %s", matches, tt.expectMatch, mismatch.String())
+			}
+		})
+	}
+}
+
 // Helper functions
 func boolPtr(b bool) *bool {
 	return &b

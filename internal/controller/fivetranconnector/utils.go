@@ -220,61 +220,6 @@ func (*FivetranConnectorReconciler) toFivetranConnector(connector *operatorv1alp
 	return fivetranConnector, nil
 }
 
-// convertSchema converts the API schema to Fivetran schema format
-func (r *FivetranConnectorReconciler) convertSchema(apiSchema *operatorv1alpha1.ConnectorSchemaConfig) *fivetran.SchemaBuilder {
-	if apiSchema == nil {
-		return nil
-	}
-
-	// Create builder - schemas and SchemaChangeHandling are now optional
-	builder := fivetran.NewSchemaBuilder()
-
-	// Set schema change handling if provided
-	if apiSchema.SchemaChangeHandling != "" {
-		builder = builder.WithSchemaChangeHandling(apiSchema.SchemaChangeHandling)
-	}
-
-	// Add schemas if provided
-	if len(apiSchema.Schemas) > 0 {
-		for schemaName, schema := range apiSchema.Schemas {
-			if schema == nil {
-				continue
-			}
-
-			builder.AddSchema(schemaName, schema.Enabled)
-			r.processSchemaTable(builder, schemaName, schema.Tables)
-		}
-	}
-
-	return builder
-}
-
-// processSchemaTable processes schema table configuration
-func (r *FivetranConnectorReconciler) processSchemaTable(builder *fivetran.SchemaBuilder, schemaName string, tables map[string]*operatorv1alpha1.TableObject) {
-	for tableName, table := range tables {
-		if table == nil {
-			continue
-		}
-
-		builder.AddTable(schemaName, tableName, table.Enabled, table.SyncMode)
-		r.processTableColumns(builder, schemaName, tableName, table.Columns)
-	}
-}
-
-// processTableColumns processes table column configuration
-func (*FivetranConnectorReconciler) processTableColumns(builder *fivetran.SchemaBuilder, schemaName, tableName string, columns map[string]*operatorv1alpha1.ColumnObject) {
-	for columnName, column := range columns {
-		if column == nil {
-			continue
-		}
-
-		builder.AddColumn(schemaName, tableName, columnName,
-			column.Enabled,
-			column.Hashed,
-			column.IsPrimaryKey)
-	}
-}
-
 // Hash calculation functions
 
 // calculateConnectorHash calculates a hash of the connector configuration

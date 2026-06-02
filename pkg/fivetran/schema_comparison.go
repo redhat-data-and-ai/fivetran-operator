@@ -83,8 +83,14 @@ func CompareSchemaWithCR(fivetranSchema connections.ConnectionSchemaDetailsRespo
 
 	// Check each schema in CR
 	for crSchemaName, crSchemaObj := range crSchema.Schemas {
+		if crSchemaObj == nil {
+			continue
+		}
 		fivetranSchemaObj, exists := fivetranSchema.Data.Schemas[crSchemaName]
-		if !exists {
+		if !exists || fivetranSchemaObj == nil {
+			if !crSchemaObj.Enabled {
+				continue
+			}
 			mismatch.HasMismatch = true
 			mismatch.MissingSchemas = append(mismatch.MissingSchemas, crSchemaName)
 			continue
@@ -97,8 +103,8 @@ func CompareSchemaWithCR(fivetranSchema connections.ConnectionSchemaDetailsRespo
 			mismatch.SchemaMismatches[crSchemaName] = &reason
 		}
 
-		// Check tables if specified in CR
-		if crSchemaObj.Tables != nil {
+		// Check tables only if schema is enabled — disabled schemas don't sync, table state is irrelevant
+		if crSchemaObj.Enabled && crSchemaObj.Tables != nil {
 			tableMismatches := compareTablesWithFivetran(fivetranSchemaObj.Tables, crSchemaObj.Tables)
 			if len(tableMismatches) > 0 {
 				mismatch.HasMismatch = true
@@ -116,8 +122,14 @@ func compareTablesWithFivetran(fivetranTables map[string]*connections.Connection
 	var tableMismatches []string
 
 	for crTableName, crTableObj := range crTables {
+		if crTableObj == nil {
+			continue
+		}
 		fivetranTableObj, exists := fivetranTables[crTableName]
-		if !exists {
+		if !exists || fivetranTableObj == nil {
+			if !crTableObj.Enabled {
+				continue
+			}
 			tableMismatches = append(tableMismatches, fmt.Sprintf("table %s not found in source", crTableName))
 			continue
 		}

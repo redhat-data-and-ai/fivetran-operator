@@ -68,6 +68,20 @@ func (s *schemaServiceImpl) GetSchemaDetails(ctx context.Context, ConnectionID s
 	return resp, WrapFivetranError(resp, err)
 }
 
+// GetColumnConfig retrieves column configuration for a specific table via the per-table endpoint.
+// Returns accurate enabled_patch_settings that the schema-level endpoint may not include.
+func (s *schemaServiceImpl) GetColumnConfig(ctx context.Context, connectionID, schema, table string) (map[string]*connections.ConnectionSchemaConfigColumnResponse, error) {
+	resp, err := s.client.NewConnectionColumnConfigListService().
+		ConnectionId(connectionID).
+		Schema(schema).
+		Table(table).
+		Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get column config for %s.%s: %w", schema, table, err)
+	}
+	return resp.Data.Columns, nil
+}
+
 // ReloadSchema reloads the schema configuration for a Connection
 func (s *schemaServiceImpl) ReloadSchema(ctx context.Context, ConnectionID string, excludeMode string) (connections.ConnectionSchemaDetailsResponse, error) {
 	reloadService := s.client.NewConnectionSchemaReload()

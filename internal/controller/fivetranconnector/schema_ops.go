@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/fivetran/go-fivetran/connections"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -30,8 +31,8 @@ import (
 
 // getValidationLevel returns the validation level, defaulting to "TABLES" if not set
 func getValidationLevel(connector *operatorv1alpha1.FivetranConnector) string {
-	if connector.Spec.ConnectorSchemas.ValidationLevel == "" {
-		return "TABLES"
+	if connector.Spec.ConnectorSchemas == nil || connector.Spec.ConnectorSchemas.ValidationLevel == "" {
+		return validationLevelTables
 	}
 	return connector.Spec.ConnectorSchemas.ValidationLevel
 }
@@ -72,7 +73,7 @@ func (r *FivetranConnectorReconciler) reconcileSchema(ctx context.Context, conne
 		}
 
 		// Schema doesn't exist - handle based on validation level
-		if validationLevel == "NONE" {
+		if validationLevel == validationLevelNone {
 			// Create new schema directly without validation
 			if err := r.createNewSchema(ctx, connector, connectorID); err != nil {
 				return fmt.Errorf("reconcileSchema: %w", err)
@@ -80,57 +81,81 @@ func (r *FivetranConnectorReconciler) reconcileSchema(ctx context.Context, conne
 			logger.Info("Schema created successfully without validation", "connectorId", connectorID)
 			// Set success condition and return early for NONE validation level
 			return r.setCondition(ctx, connector, conditionTypeSchemaReady, metav1.ConditionTrue, SchemaReasonReconciliationSuccess, msgSchemaReady)
-		} else {
-			// reload schema to create it with validation
-			if err := r.reloadSchema(ctx, connector, connectorID); err != nil {
+		}
+
+		// Reload schema to discover it with validation
+		if err := r.reloadSchema(ctx, connectorID); err != nil {
+			return fmt.Errorf("reconcileSchema: %w", err)
+		}
+		logger.Info("Schema discovered after reload", "connectorId", connectorID)
+
+		schemaDetails, err = r.FivetranClient.Schemas.GetSchemaDetails(ctx, connectorID)
+		if err != nil {
+			return fmt.Errorf("reconcileSchema: failed to get schema details after reload: %w", err)
+		}
+	} else if validationLevel != validationLevelNone {
+		// Schema exists — check if CR references schemas/tables not yet in upstream
+		needReload := validateCRAgainstUpstream(connector.Spec.ConnectorSchemas, schemaDetails)
+		if needReload {
+			logger.Info("CR references schemas/tables not found in upstream, reloading", "connectorId", connectorID)
+			if err := r.reloadSchema(ctx, connectorID); err != nil {
 				return fmt.Errorf("reconcileSchema: %w", err)
 			}
-			logger.Info("Schema created successfully after reload", "connectorId", connectorID)
+			schemaDetails, err = r.FivetranClient.Schemas.GetSchemaDetails(ctx, connectorID)
+			if err != nil {
+				return fmt.Errorf("reconcileSchema: failed to get schema details after reload: %w", err)
+			}
 		}
 	}
 
-	// Apply schema configuration
-	if err := r.applySchema(ctx, connector, connectorID); err != nil {
+	// Populate columns from per-table endpoint for tables that have columns in the CR.
+	// The schema-level GET may not include columns or accurate enabled_patch_settings.
+	columnsWereMissing := false
+	if fivetran.NeedsColumnSecondPass(connector.Spec.ConnectorSchemas) {
+		var err error
+		columnsWereMissing, err = r.populateColumnsForCR(ctx, connectorID, connector.Spec.ConnectorSchemas, &schemaDetails)
+		if err != nil {
+			return fmt.Errorf("reconcileSchema: %w", err)
+		}
+
+		// Validate that the CR doesn't try to disable locked columns (primary keys, system columns)
+		if err := fivetran.ValidateLockedColumns(schemaDetails, connector.Spec.ConnectorSchemas); err != nil {
+			return fmt.Errorf("reconcileSchema: %w: %w", ErrLockedColumns, err)
+		}
+	}
+
+	// Apply schema configuration (first pass)
+	if err := r.applySchema(ctx, connector, connectorID, schemaDetails); err != nil {
 		return fmt.Errorf("reconcileSchema: %w", err)
 	}
 
-	// Skip verification if validation level is NONE
-	if validationLevel == "NONE" {
-		logger.Info("Skipping schema verification for NONE validation level")
-	} else {
-		// Verify schema was applied correctly by fetching and comparing again
-		logger.Info("Verifying schema was applied correctly by fetching and comparing again")
-		schemaDetails, err = r.FivetranClient.Schemas.GetSchemaDetails(ctx, connectorID)
+	// Second pass: after enabling tables, columns become visible in the API response.
+	// Only needed when the first pass had incomplete column data (brand-new tables not yet synced).
+	if columnsWereMissing {
+		secondPassDetails, err := r.FivetranClient.Schemas.GetSchemaDetails(ctx, connectorID)
+		if err != nil {
+			return fmt.Errorf("reconcileSchema: failed to get schema details for second pass: %w", err)
+		}
+
+		if _, err := r.populateColumnsForCR(ctx, connectorID, connector.Spec.ConnectorSchemas, &secondPassDetails); err != nil {
+			return fmt.Errorf("reconcileSchema: second pass populate: %w", err)
+		}
+
+		if err := r.applySchema(ctx, connector, connectorID, secondPassDetails); err != nil {
+			return fmt.Errorf("reconcileSchema: second pass: %w", err)
+		}
+	}
+
+	// Verify schema was applied correctly
+	if validationLevel != validationLevelNone {
+		verifyDetails, err := r.FivetranClient.Schemas.GetSchemaDetails(ctx, connectorID)
 		if err != nil {
 			return fmt.Errorf("reconcileSchema: failed to get schema details after apply: %w", err)
 		}
 
-		matches, mismatchDetails := fivetran.CompareSchemaWithCR(schemaDetails, connector.Spec.ConnectorSchemas)
+		matches, mismatchDetails := fivetran.CompareSchemaWithCR(verifyDetails, connector.Spec.ConnectorSchemas)
 		if !matches {
-			logger.Info("Schema configuration doesn't match with the source, retrying once more",
-				"connectorId", connectorID,
-				"mismatches", mismatchDetails.String())
-
-			// Reload schema and apply
-			logger.Info("Reloading schema")
-			if err := r.reloadSchema(ctx, connector, connectorID); err != nil {
-				return fmt.Errorf("reconcileSchema reloadSchema retry: %w", err)
-			}
-
-			if err := r.applySchema(ctx, connector, connectorID); err != nil {
-				return fmt.Errorf("reconcileSchema applySchema retry: %w", err)
-			}
-
-			// Final verification after retry
-			schemaDetails, err = r.FivetranClient.Schemas.GetSchemaDetails(ctx, connectorID)
-			if err != nil {
-				return fmt.Errorf("reconcileSchema getSchemaDetails retry: %w", err)
-			}
-
-			retryMatches, retryMismatchDetails := fivetran.CompareSchemaWithCR(schemaDetails, connector.Spec.ConnectorSchemas)
-			if !retryMatches {
-				return fmt.Errorf("reconcileSchema compareSchemaWithCR retry: mismatches: %s - %w", retryMismatchDetails.String(), ErrSchemaMismatchAfterRetry)
-			}
+			return fmt.Errorf("reconcileSchema: %s - %w", mismatchDetails.String(), ErrSchemaMismatch)
 		}
 	}
 
@@ -138,34 +163,62 @@ func (r *FivetranConnectorReconciler) reconcileSchema(ctx context.Context, conne
 		return err
 	}
 	logger.Info("Schema configuration applied successfully", "connectorId", connectorID)
-
 	return nil
 }
 
-// reloadSchema will create a schema if it doesn't exist or reloads it if it does
-func (r *FivetranConnectorReconciler) reloadSchema(ctx context.Context, connector *operatorv1alpha1.FivetranConnector, connectorID string) error {
+// reloadSchema discovers or refreshes the schema from the source.
+// Uses exclude_mode=PRESERVE — BuildSchemaConfig handles enable/disable state.
+func (r *FivetranConnectorReconciler) reloadSchema(ctx context.Context, connectorID string) error {
 	logger := log.FromContext(ctx)
 
-	excludeMode := "PRESERVE"
-	if connector.Spec.ConnectorSchemas.SchemaChangeHandling == "BLOCK_ALL" {
-		excludeMode = "EXCLUDE"
-	}
-
+	const excludeMode = "PRESERVE"
 	logger.Info("Reloading schema", "connectorId", connectorID, "excludeMode", excludeMode)
 	_, err := r.FivetranClient.Schemas.ReloadSchema(ctx, connectorID, excludeMode)
 	if err != nil {
 		return fmt.Errorf("reloadSchema: %w", err)
 	}
 
-	logger.Info("Schema reloaded successfully", "connectorId", connectorID, "excludeMode", excludeMode)
+	logger.Info("Schema reloaded successfully", "connectorId", connectorID)
 	return nil
 }
 
-// applySchema applies schema configuration
-func (r *FivetranConnectorReconciler) applySchema(ctx context.Context, connector *operatorv1alpha1.FivetranConnector, connectorID string) error {
+// validateCRAgainstUpstream returns true if the CR references schemas/tables not yet
+// discovered by Fivetran, indicating a reload is needed.
+func validateCRAgainstUpstream(crSchema *operatorv1alpha1.ConnectorSchemaConfig, upstream connections.ConnectionSchemaDetailsResponse) bool {
+	if crSchema == nil {
+		return false
+	}
+	for schemaName, schemaObj := range crSchema.Schemas {
+		if schemaObj == nil || !schemaObj.Enabled {
+			continue
+		}
+		upstreamSchema, exists := upstream.Data.Schemas[schemaName]
+		if !exists || upstreamSchema == nil {
+			return true
+		}
+		for tableName, tableObj := range schemaObj.Tables {
+			if tableObj == nil || !tableObj.Enabled {
+				continue
+			}
+			if _, tableExists := upstreamSchema.Tables[tableName]; !tableExists {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// applySchema applies schema configuration using BuildSchemaConfig
+func (r *FivetranConnectorReconciler) applySchema(ctx context.Context, connector *operatorv1alpha1.FivetranConnector, connectorID string, upstream connections.ConnectionSchemaDetailsResponse) error {
 	logger := log.FromContext(ctx)
-	logger.Info("Applying schema configuration", "connectorId", connectorID)
-	schema := r.convertSchema(connector.Spec.ConnectorSchemas)
+	schemaChangeHandling := ""
+	if connector.Spec.ConnectorSchemas != nil {
+		schemaChangeHandling = connector.Spec.ConnectorSchemas.SchemaChangeHandling
+	}
+	logger.Info("Applying schema configuration with policy merge", "connectorId", connectorID,
+		"schemaChangeHandling", schemaChangeHandling)
+
+	schema := fivetran.BuildSchemaConfig(connector.Spec.ConnectorSchemas, &upstream)
 
 	_, err := r.FivetranClient.Schemas.UpdateSchema(ctx, connectorID, schema)
 	if err != nil {
@@ -185,14 +238,13 @@ func (r *FivetranConnectorReconciler) updateSchemaHash(ctx context.Context, conn
 	return r.Update(ctx, connector)
 }
 
-// createNewSchema creates a new schema configuration without reloading the schema from the source
-// This is used when validation_level is NONE to avoid the performance cost of schema reload
+// createNewSchema creates a new schema configuration without reloading the schema from the source.
+// This is used when validation_level is NONE to avoid the performance cost of schema reload.
 func (r *FivetranConnectorReconciler) createNewSchema(ctx context.Context, connector *operatorv1alpha1.FivetranConnector, connectorID string) error {
 	logger := log.FromContext(ctx)
-	logger.Info("Creating new schema configuration without validation", "connectorId", connectorID)
+	logger.Info("Creating new schema without validation", "connectorId", connectorID)
 
-	// Convert the connector schema configuration to the format expected by Fivetran API
-	schema := r.convertSchema(connector.Spec.ConnectorSchemas)
+	schema := fivetran.BuildSchemaConfig(connector.Spec.ConnectorSchemas, nil)
 
 	// Use CreateSchema API which creates schema config without requiring schema reload
 	_, err := r.FivetranClient.Schemas.CreateSchema(ctx, connectorID, schema)
@@ -205,6 +257,69 @@ func (r *FivetranConnectorReconciler) createNewSchema(ctx context.Context, conne
 		return fmt.Errorf("createNewSchema: failed to update schema hash: %w", err)
 	}
 
-	logger.Info("Schema configuration created successfully without validation", "connectorId", connectorID)
+	logger.Info("Schema created successfully", "connectorId", connectorID)
 	return nil
+}
+
+// populateColumnsForCR fetches column data from the per-table endpoint for tables
+// that have columns defined in the CR. This ensures accurate enabled_patch_settings
+// and full column lists are available before BuildSchemaConfig runs.
+// Mirrors the Terraform provider's validateColumns logic.
+// Returns true if any columns were fetched (i.e., upstream was incomplete).
+func (r *FivetranConnectorReconciler) populateColumnsForCR(
+	ctx context.Context,
+	connectorID string,
+	crSchema *operatorv1alpha1.ConnectorSchemaConfig,
+	upstream *connections.ConnectionSchemaDetailsResponse,
+) (bool, error) {
+	if crSchema == nil || upstream == nil {
+		return false, nil
+	}
+	logger := log.FromContext(ctx)
+	fetched := false
+
+	for schemaName, schemaObj := range crSchema.Schemas {
+		if schemaObj == nil || !schemaObj.Enabled {
+			continue
+		}
+		upstreamSchema := upstream.Data.Schemas[schemaName]
+		if upstreamSchema == nil {
+			logger.V(1).Info("CR references schema not found upstream, skipping column population",
+				"schema", schemaName)
+			continue
+		}
+		for tableName, tableObj := range schemaObj.Tables {
+			if tableObj == nil || len(tableObj.Columns) == 0 {
+				continue
+			}
+			upstreamTable := upstreamSchema.Tables[tableName]
+			if upstreamTable == nil {
+				logger.V(1).Info("CR references table not found upstream, skipping column population",
+					"schema", schemaName, "table", tableName)
+				continue
+			}
+
+			needsFetch := len(upstreamTable.Columns) == 0
+			if !needsFetch {
+				for colName := range tableObj.Columns {
+					if _, exists := upstreamTable.Columns[colName]; !exists {
+						needsFetch = true
+						break
+					}
+				}
+			}
+
+			if needsFetch {
+				logger.Info("Fetching column config from per-table endpoint",
+					"schema", schemaName, "table", tableName)
+				columns, err := r.FivetranClient.Schemas.GetColumnConfig(ctx, connectorID, schemaName, tableName)
+				if err != nil {
+					return false, fmt.Errorf("populateColumnsForCR: %w", err)
+				}
+				upstreamTable.Columns = columns
+				fetched = true
+			}
+		}
+	}
+	return fetched, nil
 }
