@@ -1,0 +1,176 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package e2e
+
+import (
+	"fmt"
+	"os/exec"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/redhat-data-and-ai/fivetran-operator/test/utils"
+)
+
+var _ = Describe("FivetranConnector Lifecycle", Ordered, func() {
+	const (
+		connectorTimeout  = 10 * time.Minute
+		connectorInterval = 5 * time.Second
+		deletionTimeout   = 5 * time.Minute
+	)
+
+	BeforeAll(func() {
+		if !e2eConfigPresent() {
+			Skip("Skipping connector lifecycle tests: E2E_SKIP_LIFECYCLE=true")
+		}
+	})
+
+	AfterEach(func() {
+		if CurrentSpecReport().Failed() {
+			if controllerPodName != "" {
+				By("Fetching controller manager pod logs after lifecycle test failure")
+				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+				logs, err := utils.Run(cmd)
+				if err == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n%s", logs)
+				}
+			}
+
+			By("Fetching Kubernetes events after lifecycle test failure")
+			cmd := exec.Command("kubectl", "get", "events", "-n", namespace,
+				"--sort-by=.lastTimestamp")
+			events, err := utils.Run(cmd)
+			if err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s", events)
+			}
+		}
+	})
+
+	Context("Google Sheets connector", func() {
+		const crName = "e2e-google-sheets"
+		var createdConnectorID string
+
+		crYAML := func() string {
+			return fmt.Sprintf(`apiVersion: operator.dataverse.redhat.com/v1alpha1
+kind: FivetranConnector
+metadata:
+  name: %s
+  namespace: %s
+  annotations:
+    operator.dataverse.redhat.com/allow-deletion: "true"
+spec:
+  connector:
+    group_id: "%s"
+    service: google_sheets
+    paused: true
+    schedule_type: auto
+    sync_frequency: 1440
+    daily_sync_time: "21:00"
+    run_setup_tests: true
+    config:
+      auth_type: ServiceAccount
+      sheet_id: "%s"
+      named_range: "%s"
+      schema: "e2e_google_sheets"
+      table: "e2e_test_data"
+`, crName, namespace, fivetranGroupID, googleSheetID, googleNamedRange)
+		}
+
+		AfterAll(func() {
+			By("ensuring Google Sheets connector CR is cleaned up")
+			deleteFivetranConnectorCR(crName)
+
+			By("waiting for CR to be fully removed")
+			Eventually(func() (bool, error) {
+				return crExists(crName)
+			}, deletionTimeout, connectorInterval).Should(BeFalse(),
+				"FivetranConnector CR was not deleted in time")
+
+			if createdConnectorID != "" {
+				By("verifying connector is removed from Fivetran (safety cleanup)")
+				if fivetranConnectorExists(createdConnectorID) {
+					_, _ = fmt.Fprintf(GinkgoWriter,
+						"WARNING: connector %s still exists in Fivetran after CR deletion, performing direct API cleanup\n",
+						createdConnectorID)
+					cleanupFivetranConnector(createdConnectorID)
+				}
+			}
+		})
+
+		It("should create the connector and pass setup tests", func() {
+			By("applying the Google Sheets FivetranConnector CR")
+			applyFivetranConnectorCR(crName, crYAML())
+
+			By("waiting for ConnectorReady condition to be True")
+			Eventually(func() string {
+				return getConditionStatus(crName, "ConnectorReady")
+			}, connectorTimeout, connectorInterval).Should(Equal("True"),
+				"ConnectorReady did not become True")
+
+			By("waiting for SetupTestReady condition to be True")
+			Eventually(func() string {
+				return getConditionStatus(crName, "SetupTestReady")
+			}, connectorTimeout, connectorInterval).Should(Equal("True"),
+				"SetupTestReady did not become True")
+
+			By("waiting for SchemaReady condition to be True")
+			Eventually(func() string {
+				return getConditionStatus(crName, "SchemaReady")
+			}, connectorTimeout, connectorInterval).Should(Equal("True"),
+				"SchemaReady did not become True")
+
+			By("verifying connectorId is populated in status")
+			createdConnectorID = getStatusField(crName, "connectorId")
+			Expect(createdConnectorID).NotTo(BeEmpty(), "status.connectorId should be set")
+			_, _ = fmt.Fprintf(GinkgoWriter, "Connector created with ID: %s\n", createdConnectorID)
+
+			By("verifying connectorUrl is populated in status")
+			connectorURL := getStatusField(crName, "connectorUrl")
+			Expect(connectorURL).To(ContainSubstring("fivetran.com/dashboard/connectors/"),
+				"status.connectorUrl should contain the dashboard URL")
+		})
+
+		It("should delete the connector from Fivetran when CR is removed", func() {
+			By("verifying the CR exists before deletion")
+			exists, err := crExists(crName)
+			Expect(err).NotTo(HaveOccurred(), "Failed to check CR existence")
+			Expect(exists).To(BeTrue(), "CR should exist before deletion test")
+
+			Expect(createdConnectorID).NotTo(BeEmpty(), "connectorId must be set before deletion")
+			_, _ = fmt.Fprintf(GinkgoWriter, "Deleting connector with ID: %s\n", createdConnectorID)
+
+			By("deleting the FivetranConnector CR")
+			cmd := exec.Command("kubectl", "delete", "fivetranconnector", crName,
+				"-n", namespace, "--timeout=180s")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete FivetranConnector CR")
+
+			By("waiting for the CR to be fully removed (finalizer completed)")
+			Eventually(func() (bool, error) {
+				return crExists(crName)
+			}, deletionTimeout, connectorInterval).Should(BeFalse(),
+				"FivetranConnector CR was not fully deleted — finalizer may have failed")
+
+			By("verifying the connector no longer exists in Fivetran")
+			Eventually(func() bool {
+				return fivetranConnectorExists(createdConnectorID)
+			}, 2*time.Minute, connectorInterval).Should(BeFalse(),
+				"Connector should be deleted from Fivetran after CR removal")
+		})
+	})
+})
