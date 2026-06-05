@@ -128,22 +128,22 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 KIND_CLUSTER ?= fivetran-operator-test-e2e
 
 .PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
+setup-test-e2e: ## Set up a fresh Kind cluster for e2e tests
 	@command -v $(KIND) >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
 	@case "$$($(KIND) get clusters)" in \
 		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
+			echo "Deleting existing Kind cluster '$(KIND_CLUSTER)'..."; \
+			$(KIND) delete cluster --name $(KIND_CLUSTER) ;; \
 	esac
+	@echo "Creating Kind cluster '$(KIND_CLUSTER)'..."
+	@$(KIND) create cluster --name $(KIND_CLUSTER)
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
+	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v -timeout 30m
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
