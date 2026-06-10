@@ -49,6 +49,10 @@ var (
 	fivetranGroupID   string
 	googleSheetID     string
 	googleNamedRange  string
+
+	// Postgres RDS configuration for schema policy tests.
+	postgresHost     string
+	postgresPassword string
 )
 
 const (

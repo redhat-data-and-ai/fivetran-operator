@@ -41,11 +41,17 @@ func loadE2EConfig() {
 	fivetranGroupID = os.Getenv("E2E_FIVETRAN_GROUP_ID")
 	googleSheetID = os.Getenv("E2E_GOOGLE_SHEET_ID")
 	googleNamedRange = os.Getenv("E2E_GOOGLE_NAMED_RANGE")
+	postgresHost = os.Getenv("E2E_POSTGRES_HOST")
+	postgresPassword = os.Getenv("E2E_POSTGRES_PASSWORD")
 }
 
 func e2eConfigPresent() bool {
 	return fivetranAPIKey != "" && fivetranAPISecret != "" && fivetranGroupID != "" &&
 		googleSheetID != "" && googleNamedRange != ""
+}
+
+func postgresConfigPresent() bool {
+	return e2eConfigPresent() && postgresHost != "" && postgresPassword != ""
 }
 
 // setupVaultDevServer deploys a HashiCorp Vault dev server in a separate
@@ -214,6 +220,19 @@ func getConditionStatus(crName, conditionType string) string {
 	return output
 }
 
+// getConditionMessage returns the message string of a named condition on a CR.
+func getConditionMessage(crName, conditionType string) string {
+	jsonpath := fmt.Sprintf(
+		`jsonpath={.status.conditions[?(@.type=="%s")].message}`, conditionType)
+	cmd := exec.Command("kubectl", "get", "fivetranconnector", crName,
+		"-n", namespace, "-o", jsonpath)
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return ""
+	}
+	return output
+}
+
 // getStatusField returns a field from the CR's .status using a jsonpath expression.
 func getStatusField(crName, field string) string {
 	cmd := exec.Command("kubectl", "get", "fivetranconnector", crName,
@@ -271,6 +290,48 @@ func fivetranConnectorExists(connectorID string) bool {
 		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: unexpected HTTP %d checking connector %s (assuming connector still exists)\n", resp.StatusCode, connectorID)
 		return true
 	}
+}
+
+// fivetranAPIGet performs an authenticated GET request to the Fivetran API
+// and returns the parsed JSON response.
+func fivetranAPIGet(urlPath string) (map[string]interface{}, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET",
+		"https://api.fivetran.com/v1/"+urlPath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request for %s: %w", urlPath, err)
+	}
+	req.SetBasicAuth(fivetranAPIKey, fivetranAPISecret)
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed for %s: %w", urlPath, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		var errResult map[string]interface{}
+		_ = json.NewDecoder(resp.Body).Decode(&errResult)
+		return errResult, fmt.Errorf("API returned HTTP %d for %s: %v",
+			resp.StatusCode, urlPath, errResult["message"])
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response for %s: %w", urlPath, err)
+	}
+	return result, nil
+}
+
+// getConnectorSchemaDetails fetches the schema configuration for a connector.
+// Used by schema policy E2E tests.
+func getConnectorSchemaDetails(connectorID string) (map[string]interface{}, error) { //nolint:unused // used by upcoming schema policy tests
+	return fivetranAPIGet(fmt.Sprintf("connections/%s/schemas", connectorID))
+}
+
+// getConnectorDetails fetches the connector details from the Fivetran API.
+func getConnectorDetails(connectorID string) (map[string]interface{}, error) {
+	return fivetranAPIGet(fmt.Sprintf("connections/%s", connectorID))
 }
 
 // cleanupFivetranConnector deletes a connector directly via the Fivetran API.
