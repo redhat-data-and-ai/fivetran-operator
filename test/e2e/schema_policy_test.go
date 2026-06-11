@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/fivetran/go-fivetran/connections"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -67,11 +68,11 @@ spec:
       port: 5432
       database: "fivetran_e2e"
       user: "fivetran_e2e"
-      password: "%s"
+      password: "vault:e2e/postgres#password"
       schema_prefix: "e2e_schema_policy"
       update_method: "XMIN"
 `, crName, namespace, fivetranGroupID,
-			postgresHost, postgresPassword)
+			postgresHost)
 
 		if schemasBlock != "" {
 			cr += "  connectorSchemas:\n" + schemasBlock
@@ -113,53 +114,50 @@ spec:
 			fmt.Sprintf("SchemaReady should be %s for: %s", expectedReady, testName))
 	}
 
-	// getSchemas fetches and extracts the schemas map from the Fivetran API response.
-	getSchemas := func() map[string]interface{} {
-		schema, err := getConnectorSchemaDetails(connectorID)
+	// sdkSchemas is the type alias for the SDK schema map.
+	type sdkSchemas = map[string]*connections.ConnectionSchemaConfigSchemaResponse
+
+	// getSchemas fetches the schema config from Fivetran via the SDK.
+	getSchemas := func() sdkSchemas {
+		resp, err := getConnectorSchemaDetails(connectorID)
 		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "failed to get schema details")
-		data, ok := schema["data"].(map[string]interface{})
-		ExpectWithOffset(1, ok).To(BeTrue(), "missing data field in schema response")
-		schemas, ok := data["schemas"].(map[string]interface{})
-		ExpectWithOffset(1, ok).To(BeTrue(), "missing schemas field")
-		return schemas
+		ExpectWithOffset(1, resp.Data.Schemas).NotTo(BeNil(), "schemas should not be nil")
+		return resp.Data.Schemas
 	}
 
-	// tableEnabled returns whether a table is enabled in the schema response.
-	tableEnabled := func(schemas map[string]interface{}, schemaName, tableName string) bool {
-		s, ok := schemas[schemaName].(map[string]interface{})
+	// tableEnabled returns whether a table is enabled.
+	tableEnabled := func(schemas sdkSchemas, schemaName, tableName string) bool {
+		s, ok := schemas[schemaName]
 		ExpectWithOffset(1, ok).To(BeTrue(), schemaName+" should exist")
-		tables, ok := s["tables"].(map[string]interface{})
-		ExpectWithOffset(1, ok).To(BeTrue(), schemaName+" should have tables")
-		t, ok := tables[tableName].(map[string]interface{})
+		t, ok := s.Tables[tableName]
 		ExpectWithOffset(1, ok).To(BeTrue(), tableName+" should exist in "+schemaName)
-		return t["enabled"].(bool)
+		ExpectWithOffset(1, t.Enabled).NotTo(BeNil(), tableName+" enabled should not be nil")
+		return *t.Enabled
 	}
 
 	// schemaEnabled returns whether a schema is enabled.
-	schemaEnabled := func(schemas map[string]interface{}, schemaName string) bool {
-		s, ok := schemas[schemaName].(map[string]interface{})
+	schemaEnabled := func(schemas sdkSchemas, schemaName string) bool {
+		s, ok := schemas[schemaName]
 		ExpectWithOffset(1, ok).To(BeTrue(), schemaName+" should exist")
-		return s["enabled"].(bool)
+		ExpectWithOffset(1, s.Enabled).NotTo(BeNil(), schemaName+" enabled should not be nil")
+		return *s.Enabled
 	}
 
-	// columnEnabled returns whether a column is enabled in the schema response.
-	columnEnabled := func(
-		schemas map[string]interface{}, tablePath [2]string, colName string,
-	) bool {
-		s, ok := schemas[tablePath[0]].(map[string]interface{})
+	// columnEnabled returns whether a column is enabled.
+	columnEnabled := func(schemas sdkSchemas, tablePath [2]string, colName string) bool {
+		s, ok := schemas[tablePath[0]]
 		ExpectWithOffset(1, ok).To(BeTrue(), tablePath[0]+" should exist")
-		tables, ok := s["tables"].(map[string]interface{})
-		ExpectWithOffset(1, ok).To(BeTrue(), tablePath[0]+" should have tables")
-		t, ok := tables[tablePath[1]].(map[string]interface{})
+		t, ok := s.Tables[tablePath[1]]
 		ExpectWithOffset(1, ok).To(BeTrue(),
 			tablePath[1]+" should exist in "+tablePath[0])
-		cols, ok := t["columns"].(map[string]interface{})
-		ExpectWithOffset(1, ok).To(BeTrue(),
+		ExpectWithOffset(1, t.Columns).NotTo(BeNil(),
 			tablePath[1]+" should have columns")
-		c, ok := cols[colName].(map[string]interface{})
+		c, ok := t.Columns[colName]
 		ExpectWithOffset(1, ok).To(BeTrue(),
 			colName+" should exist in "+tablePath[1])
-		return c["enabled"].(bool)
+		ExpectWithOffset(1, c.Enabled).NotTo(BeNil(),
+			colName+" enabled should not be nil")
+		return *c.Enabled
 	}
 
 	// --- First test creates the connector WITH schema config ---
@@ -262,11 +260,11 @@ spec:
 		Expect(schemaEnabled(schemas, "e2e_public")).To(BeTrue(),
 			"e2e_public should be enabled")
 
-		publicSchema := schemas["e2e_public"].(map[string]interface{})
-		publicTables := publicSchema["tables"].(map[string]interface{})
-		for tableName, tableVal := range publicTables {
-			table := tableVal.(map[string]interface{})
-			Expect(table["enabled"]).To(BeFalse(),
+		publicSchema := schemas["e2e_public"]
+		Expect(publicSchema).NotTo(BeNil())
+		for tableName, table := range publicSchema.Tables {
+			Expect(table.Enabled).NotTo(BeNil())
+			Expect(*table.Enabled).To(BeFalse(),
 				fmt.Sprintf("%s should be disabled (no tables in CR)", tableName))
 		}
 	})
@@ -366,11 +364,11 @@ spec:
 		Expect(tableEnabled(schemas, "e2e_public", "users")).To(BeTrue(),
 			"users table should be enabled")
 
-		publicSchema := schemas["e2e_public"].(map[string]interface{})
-		publicTables := publicSchema["tables"].(map[string]interface{})
-		usersTable := publicTables["users"].(map[string]interface{})
-		cols, hasCols := usersTable["columns"].(map[string]interface{})
-		if hasCols && len(cols) > 0 {
+		publicSchema := schemas["e2e_public"]
+		Expect(publicSchema).NotTo(BeNil())
+		usersTable := publicSchema.Tables["users"]
+		Expect(usersTable).NotTo(BeNil())
+		if len(usersTable.Columns) > 0 {
 			_, _ = fmt.Fprintf(GinkgoWriter,
 				"Columns present (state preserved from previous test, not reset)\n")
 		}
@@ -396,12 +394,10 @@ spec:
 		Expect(tableEnabled(schemas, "e2e_public", "users")).To(BeTrue(),
 			"users should be enabled")
 
-		_, hasInventory := schemas["e2e_inventory"]
-		if hasInventory {
-			invSchema := schemas["e2e_inventory"].(map[string]interface{})
+		if invSchema, ok := schemas["e2e_inventory"]; ok && invSchema != nil {
 			_, _ = fmt.Fprintf(GinkgoWriter,
 				"e2e_inventory exists with enabled=%v (untouched by ALLOW_ALL)\n",
-				invSchema["enabled"])
+				invSchema.Enabled)
 		}
 	})
 
@@ -429,12 +425,14 @@ spec:
 		Expect(columnEnabled(schemas, [2]string{"e2e_public", "users"}, "email")).To(BeTrue(),
 			"email should be enabled")
 
-		publicSchema := schemas["e2e_public"].(map[string]interface{})
-		publicTables := publicSchema["tables"].(map[string]interface{})
-		usersTable := publicTables["users"].(map[string]interface{})
-		cols := usersTable["columns"].(map[string]interface{})
-		emailCol := cols["email"].(map[string]interface{})
-		Expect(emailCol["hashed"]).To(BeTrue(),
+		publicSchema := schemas["e2e_public"]
+		Expect(publicSchema).NotTo(BeNil())
+		usersTable := publicSchema.Tables["users"]
+		Expect(usersTable).NotTo(BeNil())
+		emailCol := usersTable.Columns["email"]
+		Expect(emailCol).NotTo(BeNil())
+		Expect(emailCol.Hashed).NotTo(BeNil())
+		Expect(*emailCol.Hashed).To(BeTrue(),
 			"email should be hashed")
 
 		Expect(columnEnabled(schemas, [2]string{"e2e_public", "users"}, "password")).To(BeFalse(),

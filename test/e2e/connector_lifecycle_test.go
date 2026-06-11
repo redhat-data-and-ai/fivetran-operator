@@ -260,9 +260,7 @@ spec:
 			details, err := getConnectorDetails(createdConnectorID)
 			Expect(err).NotTo(HaveOccurred(),
 				"Should be able to fetch orphaned connector details")
-			data, ok := details["data"].(map[string]interface{})
-			Expect(ok).To(BeTrue(), "Response should contain data field")
-			Expect(data["id"]).To(Equal(createdConnectorID),
+			Expect(details.Data.ID).To(Equal(createdConnectorID),
 				"Connector ID should match")
 
 			_, _ = fmt.Fprintf(GinkgoWriter,

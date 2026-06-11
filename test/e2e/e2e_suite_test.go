@@ -138,6 +138,15 @@ var _ = BeforeSuite(func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to create fivetran-secrets")
 
 		setupVaultDevServer()
+
+		if postgresPassword != "" {
+			By("storing Postgres password in Vault for schema policy tests")
+			cmd = exec.Command("kubectl", "exec", "vault", "-n", vaultNamespace, "--",
+				"vault", "kv", "put", "secret/e2e/postgres",
+				fmt.Sprintf("password=%s", postgresPassword))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to store Postgres password in Vault")
+		}
 	} else {
 		By("creating placeholder fivetran-secrets (lifecycle tests disabled)")
 		placeholderSecret := map[string]interface{}{

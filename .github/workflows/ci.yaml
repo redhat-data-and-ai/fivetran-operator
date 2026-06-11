@@ -81,6 +81,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-west-2
       - name: Create E2E test database
+        timeout-minutes: 15
         run: |
           cd test/e2e/scripts
           ./rds-lifecycle.sh create

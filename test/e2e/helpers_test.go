@@ -27,9 +27,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fivetran/go-fivetran/connections"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	fivetranPkg "github.com/redhat-data-and-ai/fivetran-operator/pkg/fivetran"
 	"github.com/redhat-data-and-ai/fivetran-operator/test/utils"
 )
 
@@ -120,10 +122,19 @@ spec:
 	_, err = utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "Failed to enable AppRole auth")
 
+	By("creating Vault policy for e2e secret access")
+	cmd = exec.Command("kubectl", "exec", "vault", "-n", vaultNamespace, "--",
+		"sh", "-c",
+		`vault policy write e2e-read - <<'HCL'
+path "secret/data/e2e/*" { capabilities = ["read"] }
+HCL`)
+	_, err = utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to create Vault policy")
+
 	By("creating AppRole role")
 	cmd = exec.Command("kubectl", "exec", "vault", "-n", vaultNamespace, "--",
 		"vault", "write", "auth/approle/role/e2e-role",
-		"token_policies=default", "token_ttl=1h", "token_max_ttl=4h")
+		"token_policies=default,e2e-read", "token_ttl=1h", "token_max_ttl=4h")
 	_, err = utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "Failed to create AppRole role")
 
@@ -292,46 +303,27 @@ func fivetranConnectorExists(connectorID string) bool {
 	}
 }
 
-// fivetranAPIGet performs an authenticated GET request to the Fivetran API
-// and returns the parsed JSON response.
-func fivetranAPIGet(urlPath string) (map[string]interface{}, error) {
+// newFivetranSDKClient creates a Fivetran SDK client for E2E test assertions.
+func newFivetranSDKClient() *fivetranPkg.Client {
+	client, err := fivetranPkg.NewClient(fivetranAPIKey, fivetranAPISecret)
+	Expect(err).NotTo(HaveOccurred(), "Failed to create Fivetran SDK client")
+	return client
+}
+
+// getConnectorSchemaDetails fetches the schema configuration using the Fivetran SDK.
+func getConnectorSchemaDetails(connectorID string) (connections.ConnectionSchemaDetailsResponse, error) {
+	client := newFivetranSDKClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET",
-		"https://api.fivetran.com/v1/"+urlPath, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request for %s: %w", urlPath, err)
-	}
-	req.SetBasicAuth(fivetranAPIKey, fivetranAPISecret)
-	resp, err := (&http.Client{}).Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("API request failed for %s: %w", urlPath, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		var errResult map[string]interface{}
-		_ = json.NewDecoder(resp.Body).Decode(&errResult)
-		return errResult, fmt.Errorf("API returned HTTP %d for %s: %v",
-			resp.StatusCode, urlPath, errResult["message"])
-	}
-
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response for %s: %w", urlPath, err)
-	}
-	return result, nil
+	return client.Schemas.GetSchemaDetails(ctx, connectorID)
 }
 
-// getConnectorSchemaDetails fetches the schema configuration for a connector.
-// Used by schema policy E2E tests.
-func getConnectorSchemaDetails(connectorID string) (map[string]interface{}, error) { //nolint:unused // used by upcoming schema policy tests
-	return fivetranAPIGet(fmt.Sprintf("connections/%s/schemas", connectorID))
-}
-
-// getConnectorDetails fetches the connector details from the Fivetran API.
-func getConnectorDetails(connectorID string) (map[string]interface{}, error) {
-	return fivetranAPIGet(fmt.Sprintf("connections/%s", connectorID))
+// getConnectorDetails fetches the connector details using the Fivetran SDK.
+func getConnectorDetails(connectorID string) (connections.DetailsWithCustomConfigNoTestsResponse, error) {
+	client := newFivetranSDKClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return client.Connections.GetConnection(ctx, connectorID)
 }
 
 // cleanupFivetranConnector deletes a connector directly via the Fivetran API.

@@ -6,12 +6,13 @@
 set -euo pipefail
 
 : "${AWS_REGION:=us-west-2}"
-: "${RDS_INSTANCE_ID:=fivetran-e2e-postgres}"
+RDS_SUFFIX="${RDS_SUFFIX:=$(openssl rand -hex 4)}"
+: "${RDS_INSTANCE_ID:=fivetran-e2e-${RDS_SUFFIX}}"
 : "${RDS_DB_NAME:=fivetran_e2e}"
 : "${RDS_MASTER_USER:=e2e_admin}"
 : "${RDS_MASTER_PASSWORD:=$(openssl rand -hex 16)}"
 : "${RDS_INSTANCE_CLASS:=db.t4g.micro}"
-: "${RDS_SG_NAME:=fivetran-e2e-postgres-sg}"
+: "${RDS_SG_NAME:=fivetran-e2e-sg-${RDS_SUFFIX}}"
 : "${FIVETRAN_CIDR:=3.239.194.48/29}"
 : "${FIVETRAN_USER_PASSWORD:=$(openssl rand -hex 16)}"
 
@@ -21,6 +22,7 @@ STATE_FILE="${SCRIPT_DIR}/.rds-state.env"
 save_state() {
     cat > "${STATE_FILE}" <<EOF
 RDS_INSTANCE_ID=${RDS_INSTANCE_ID}
+RDS_SG_NAME=${RDS_SG_NAME}
 RDS_DB_NAME=${RDS_DB_NAME}
 RDS_MASTER_USER=${RDS_MASTER_USER}
 RDS_MASTER_PASSWORD=${RDS_MASTER_PASSWORD}
@@ -78,7 +80,7 @@ cmd_create() {
         --group-id "${RDS_SG_ID}" \
         --protocol tcp --port 5432 \
         --cidr "${FIVETRAN_CIDR}" \
-        --region "${AWS_REGION}" > /dev/null
+        --region "${AWS_REGION}" > /dev/null 2>&1 || echo "  (rule already exists, skipping)"
 
     echo "Adding local IP ingress rule for seeding..."
     local my_ip
@@ -92,7 +94,7 @@ cmd_create() {
             --group-id "${RDS_SG_ID}" \
             --protocol tcp --port 5432 \
             --cidr "${my_ip}/32" \
-            --region "${AWS_REGION}" > /dev/null
+            --region "${AWS_REGION}" > /dev/null 2>&1 || echo "  (rule already exists, skipping)"
         echo "Added ingress for ${my_ip}/32"
     fi
 
@@ -229,6 +231,15 @@ cmd_destroy() {
     echo "=== Cleanup complete ==="
 }
 
+check_psql() {
+    if ! command -v psql &> /dev/null; then
+        echo "ERROR: psql not installed." >&2
+        echo "  macOS:  brew install libpq && brew link --force libpq" >&2
+        echo "  Ubuntu: sudo apt-get install -y postgresql-client" >&2
+        exit 1
+    fi
+}
+
 check_aws_auth() {
     if ! aws sts get-caller-identity --region "${AWS_REGION}" > /dev/null 2>&1; then
         echo "ERROR: Not authenticated to AWS. Run your AWS login (e.g., aws-saml.py) first." >&2
@@ -237,8 +248,8 @@ check_aws_auth() {
 }
 
 case "${1:-}" in
-    create)  check_aws_auth; cmd_create ;;
-    seed)    cmd_seed ;;
+    create)  check_psql; check_aws_auth; cmd_create ;;
+    seed)    check_psql; cmd_seed ;;
     destroy) check_aws_auth; cmd_destroy ;;
     endpoint) cmd_endpoint ;;
     *)
