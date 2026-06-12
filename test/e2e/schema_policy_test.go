@@ -28,104 +28,28 @@ import (
 	"github.com/redhat-data-and-ai/fivetran-operator/test/utils"
 )
 
-var _ = Describe("Schema Policy Enforcement", Ordered, func() {
+var _ = Describe("Schema Policy Enforcement", func() {
 	const (
-		crName            = "e2e-schema-policy"
 		connectorTimeout  = 10 * time.Minute
 		connectorInterval = 5 * time.Second
-		deletionTimeout   = 5 * time.Minute
 	)
 
-	var connectorID string
-
-	BeforeAll(func() {
+	BeforeEach(func() {
 		if !postgresConfigPresent() {
 			Skip("Skipping schema policy tests: " +
 				"E2E_POSTGRES_HOST and E2E_POSTGRES_PASSWORD must be set")
 		}
 	})
 
-	// buildCR creates a FivetranConnector CR YAML with the given connectorSchemas block.
-	buildCR := func(schemasBlock string) string {
-		cr := fmt.Sprintf(`apiVersion: operator.dataverse.redhat.com/v1alpha1
-kind: FivetranConnector
-metadata:
-  name: %s
-  namespace: %s
-  annotations:
-    operator.dataverse.redhat.com/allow-deletion: "true"
-spec:
-  connector:
-    group_id: "%s"
-    service: postgres_rds
-    paused: true
-    schedule_type: auto
-    sync_frequency: 1440
-    daily_sync_time: "21:00"
-    run_setup_tests: true
-    config:
-      host: "%s"
-      port: 5432
-      database: "fivetran_e2e"
-      user: "fivetran_e2e"
-      password: "vault:e2e/postgres#password"
-      schema_prefix: "e2e_sp_%s"
-      update_method: "XMIN"
-`, crName, namespace, fivetranGroupID,
-			postgresHost, runSuffix)
-
-		if schemasBlock != "" {
-			cr += "  connectorSchemas:\n" + schemasBlock
-		}
-		return cr
-	}
-
-	// getSchemaAnnotation returns the current schema hash annotation value.
-	getSchemaAnnotation := func() string {
-		cmd := exec.Command("kubectl", "get", "fivetranconnector", crName,
-			"-n", namespace, "-o",
-			`jsonpath={.metadata.annotations.operator\.dataverse\.redhat\.com/schema-hash}`)
-		output, err := utils.Run(cmd)
-		if err != nil {
-			return ""
-		}
-		return output
-	}
-
-	// applySchemaAndWait updates the CR with a new connectorSchemas block,
-	// waits for the operator to detect the change (schema hash annotation changes),
-	// then waits for the expected SchemaReady condition.
-	applySchemaAndWait := func(testName, schemasBlock, expectedReady string) {
-		oldHash := getSchemaAnnotation()
-
-		By("applying schema config: " + testName)
-		applyFivetranConnectorCR(crName, buildCR(schemasBlock))
-
-		By("waiting for operator to reconcile schema (hash change)")
-		Eventually(func() string {
-			return getSchemaAnnotation()
-		}, connectorTimeout, connectorInterval).Should(And(Not(BeEmpty()), Not(Equal(oldHash))),
-			"Schema hash should change to a new non-empty value after CR update for "+testName)
-
-		By(fmt.Sprintf("waiting for SchemaReady=%s", expectedReady))
-		Eventually(func() string {
-			return getConditionStatus(crName, "SchemaReady")
-		}, connectorTimeout, connectorInterval).Should(Equal(expectedReady),
-			fmt.Sprintf("SchemaReady should be %s for: %s", expectedReady, testName))
-	}
-
-	// sdkSchemas is the type alias for the SDK schema map.
 	type sdkSchemas = map[string]*connections.ConnectionSchemaConfigSchemaResponse
 
-	// getSchemas fetches the schema config from Fivetran via the SDK.
-	getSchemas := func() sdkSchemas {
+	getSchemas := func(connectorID string) sdkSchemas {
 		resp, err := getConnectorSchemaDetails(connectorID)
 		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "failed to get schema details")
 		ExpectWithOffset(1, resp.Data.Schemas).NotTo(BeNil(), "schemas should not be nil")
 		return resp.Data.Schemas
 	}
 
-	// tableEnabled returns whether a table is enabled.
 	tableEnabled := func(schemas sdkSchemas, schemaName, tableName string) bool {
 		s, ok := schemas[schemaName]
 		ExpectWithOffset(1, ok).To(BeTrue(), schemaName+" should exist")
@@ -135,7 +59,6 @@ spec:
 		return *t.Enabled
 	}
 
-	// schemaEnabled returns whether a schema is enabled.
 	schemaEnabled := func(schemas sdkSchemas, schemaName string) bool {
 		s, ok := schemas[schemaName]
 		ExpectWithOffset(1, ok).To(BeTrue(), schemaName+" should exist")
@@ -143,7 +66,6 @@ spec:
 		return *s.Enabled
 	}
 
-	// columnEnabled returns whether a column is enabled.
 	columnEnabled := func(schemas sdkSchemas, tablePath [2]string, colName string) bool {
 		s, ok := schemas[tablePath[0]]
 		ExpectWithOffset(1, ok).To(BeTrue(), tablePath[0]+" should exist")
@@ -160,11 +82,65 @@ spec:
 		return *c.Enabled
 	}
 
-	// --- First test creates the connector WITH schema config ---
+	// createConnector creates a Postgres connector with the given schema config,
+	// waits for ConnectorReady, SetupTestReady, and SchemaReady to become True,
+	// and returns the Fivetran connector ID.
+	createConnector := func(crName, schemasBlock string) string {
+		applyFivetranConnectorCR(crName, buildPostgresCR(crName, schemasBlock))
+
+		Eventually(func() string {
+			return getConditionStatus(crName, "ConnectorReady")
+		}, connectorTimeout, connectorInterval).Should(Equal("True"),
+			"ConnectorReady did not become True")
+
+		Eventually(func() string {
+			return getConditionStatus(crName, "SetupTestReady")
+		}, connectorTimeout, connectorInterval).Should(Equal("True"),
+			"SetupTestReady did not become True")
+
+		connectorID := getStatusField(crName, "connectorId")
+		Expect(connectorID).NotTo(BeEmpty(), "connectorId should be set")
+		_, _ = fmt.Fprintf(GinkgoWriter, "Connector %s created with ID: %s\n", crName, connectorID)
+
+		Eventually(func() string {
+			return getConditionStatus(crName, "SchemaReady")
+		}, connectorTimeout, connectorInterval).Should(Equal("True"),
+			"SchemaReady did not become True")
+
+		return connectorID
+	}
+
+	// updateSchema applies a new schema config to an existing connector and waits
+	// for the operator to reconcile (schema hash changes + SchemaReady matches expected).
+	updateSchema := func(crName, schemasBlock, expectedReady string) {
+		oldHash := getSchemaAnnotation(crName)
+
+		applyFivetranConnectorCR(crName, buildPostgresCR(crName, schemasBlock))
+
+		Eventually(func() string {
+			return getSchemaAnnotation(crName)
+		}, connectorTimeout, connectorInterval).Should(
+			And(Not(BeEmpty()), Not(Equal(oldHash))),
+			"schema hash should change after CR update")
+
+		Eventually(func() string {
+			return getConditionStatus(crName, "SchemaReady")
+		}, connectorTimeout, connectorInterval).Should(Equal(expectedReady),
+			fmt.Sprintf("SchemaReady should be %s", expectedReady))
+	}
+
+	cleanup := func(crName, connectorID string) {
+		deleteFivetranConnectorCR(crName)
+		if connectorID != "" {
+			cleanupFivetranConnector(connectorID)
+		}
+	}
+
+	// --- Schema/Table Policy Tests ---
 
 	It("BLOCK_ALL — only listed schemas/tables sync", func() {
-		By("creating the Postgres connector with BLOCK_ALL schema config")
-		applyFivetranConnectorCR(crName, buildCR(`    schema_change_handling: BLOCK_ALL
+		crName := "e2e-sp-01"
+		connectorID := createConnector(crName, `    schema_change_handling: BLOCK_ALL
     schemas:
       e2e_public:
         enabled: true
@@ -172,33 +148,10 @@ spec:
           users:
             enabled: true
             sync_mode: SOFT_DELETE
-`))
+`)
+		DeferCleanup(func() { cleanup(crName, connectorID) })
 
-		By("waiting for ConnectorReady=True")
-		Eventually(func() string {
-			return getConditionStatus(crName, "ConnectorReady")
-		}, connectorTimeout, connectorInterval).Should(Equal("True"),
-			"ConnectorReady did not become True")
-
-		By("waiting for SetupTestReady=True")
-		Eventually(func() string {
-			return getConditionStatus(crName, "SetupTestReady")
-		}, connectorTimeout, connectorInterval).Should(Equal("True"),
-			"SetupTestReady did not become True")
-
-		connectorID = getStatusField(crName, "connectorId")
-		Expect(connectorID).NotTo(BeEmpty(), "connectorId should be set")
-		_, _ = fmt.Fprintf(GinkgoWriter,
-			"Schema policy connector created with ID: %s\n", connectorID)
-
-		By("waiting for SchemaReady=True")
-		Eventually(func() string {
-			return getConditionStatus(crName, "SchemaReady")
-		}, connectorTimeout, connectorInterval).Should(Equal("True"),
-			"SchemaReady did not become True for BLOCK_ALL")
-
-		By("verifying schema state via Fivetran API")
-		schemas := getSchemas()
+		schemas := getSchemas(connectorID)
 		Expect(schemaEnabled(schemas, "e2e_public")).To(BeTrue(),
 			"e2e_public should be enabled")
 		Expect(tableEnabled(schemas, "e2e_public", "users")).To(BeTrue(),
@@ -214,8 +167,8 @@ spec:
 	})
 
 	It("ALLOW_COLUMNS — listed tables enabled, unlisted disabled", func() {
-		applySchemaAndWait("ALLOW_COLUMNS tables",
-			`    schema_change_handling: ALLOW_COLUMNS
+		crName := "e2e-sp-02"
+		connectorID := createConnector(crName, `    schema_change_handling: ALLOW_COLUMNS
     schemas:
       e2e_inventory:
         enabled: true
@@ -229,9 +182,10 @@ spec:
           page_views:
             enabled: true
             sync_mode: SOFT_DELETE
-`, "True")
+`)
+		DeferCleanup(func() { cleanup(crName, connectorID) })
 
-		schemas := getSchemas()
+		schemas := getSchemas(connectorID)
 		Expect(schemaEnabled(schemas, "e2e_public")).To(BeFalse(),
 			"e2e_public should be disabled (not in CR)")
 		Expect(schemaEnabled(schemas, "e2e_inventory")).To(BeTrue(),
@@ -249,14 +203,15 @@ spec:
 	})
 
 	It("ALLOW_COLUMNS — enabled schema with NO tables listed", func() {
-		applySchemaAndWait("ALLOW_COLUMNS no tables",
-			`    schema_change_handling: ALLOW_COLUMNS
+		crName := "e2e-sp-03"
+		connectorID := createConnector(crName, `    schema_change_handling: ALLOW_COLUMNS
     schemas:
       e2e_public:
         enabled: true
-`, "True")
+`)
+		DeferCleanup(func() { cleanup(crName, connectorID) })
 
-		schemas := getSchemas()
+		schemas := getSchemas(connectorID)
 		Expect(schemaEnabled(schemas, "e2e_public")).To(BeTrue(),
 			"e2e_public should be enabled")
 
@@ -270,8 +225,8 @@ spec:
 	})
 
 	It("ALLOW_COLUMNS — disabled schema stays disabled", func() {
-		applySchemaAndWait("ALLOW_COLUMNS disabled schema",
-			`    schema_change_handling: ALLOW_COLUMNS
+		crName := "e2e-sp-04"
+		connectorID := createConnector(crName, `    schema_change_handling: ALLOW_COLUMNS
     schemas:
       e2e_public:
         enabled: true
@@ -281,9 +236,10 @@ spec:
             sync_mode: SOFT_DELETE
       e2e_inventory:
         enabled: false
-`, "True")
+`)
+		DeferCleanup(func() { cleanup(crName, connectorID) })
 
-		schemas := getSchemas()
+		schemas := getSchemas(connectorID)
 		Expect(schemaEnabled(schemas, "e2e_public")).To(BeTrue(),
 			"e2e_public should be enabled")
 		Expect(schemaEnabled(schemas, "e2e_inventory")).To(BeFalse(),
@@ -293,8 +249,8 @@ spec:
 	// --- Column Scenarios ---
 
 	It("BLOCK_ALL + columns — only listed columns enabled", func() {
-		applySchemaAndWait("BLOCK_ALL columns",
-			`    schema_change_handling: BLOCK_ALL
+		crName := "e2e-sp-05"
+		connectorID := createConnector(crName, `    schema_change_handling: BLOCK_ALL
     schemas:
       e2e_public:
         enabled: true
@@ -307,9 +263,10 @@ spec:
                 enabled: true
               email:
                 enabled: true
-`, "True")
+`)
+		DeferCleanup(func() { cleanup(crName, connectorID) })
 
-		schemas := getSchemas()
+		schemas := getSchemas(connectorID)
 		Expect(columnEnabled(schemas, [2]string{"e2e_public", "users"}, "name")).To(BeTrue(),
 			"name should be enabled (in CR)")
 		Expect(columnEnabled(schemas, [2]string{"e2e_public", "users"}, "email")).To(BeTrue(),
@@ -323,8 +280,8 @@ spec:
 	})
 
 	It("ALLOW_COLUMNS + columns — disable specific columns", func() {
-		applySchemaAndWait("ALLOW_COLUMNS disable columns",
-			`    schema_change_handling: ALLOW_COLUMNS
+		crName := "e2e-sp-06"
+		connectorID := createConnector(crName, `    schema_change_handling: ALLOW_COLUMNS
     schemas:
       e2e_public:
         enabled: true
@@ -335,9 +292,10 @@ spec:
             columns:
               password:
                 enabled: false
-`, "True")
+`)
+		DeferCleanup(func() { cleanup(crName, connectorID) })
 
-		schemas := getSchemas()
+		schemas := getSchemas(connectorID)
 		Expect(columnEnabled(schemas, [2]string{"e2e_public", "users"}, "password")).To(BeFalse(),
 			"password should be disabled (explicit in CR)")
 		Expect(columnEnabled(schemas, [2]string{"e2e_public", "users"}, "name")).To(BeTrue(),
@@ -349,8 +307,26 @@ spec:
 	})
 
 	It("BLOCK_ALL — no columns block means columns NOT managed", func() {
-		applySchemaAndWait("BLOCK_ALL no columns block",
-			`    schema_change_handling: BLOCK_ALL
+		crName := "e2e-sp-07"
+		// Step 1: Create with columns managed (password disabled via BLOCK_ALL)
+		connectorID := createConnector(crName, `    schema_change_handling: BLOCK_ALL
+    schemas:
+      e2e_public:
+        enabled: true
+        tables:
+          users:
+            enabled: true
+            sync_mode: SOFT_DELETE
+            columns:
+              name:
+                enabled: true
+              email:
+                enabled: true
+`)
+		DeferCleanup(func() { cleanup(crName, connectorID) })
+
+		// Step 2: Update without columns block — columns should be untouched
+		updateSchema(crName, `    schema_change_handling: BLOCK_ALL
     schemas:
       e2e_public:
         enabled: true
@@ -360,25 +336,33 @@ spec:
             sync_mode: SOFT_DELETE
 `, "True")
 
-		schemas := getSchemas()
+		schemas := getSchemas(connectorID)
 		Expect(tableEnabled(schemas, "e2e_public", "users")).To(BeTrue(),
 			"users table should be enabled")
-
-		publicSchema := schemas["e2e_public"]
-		Expect(publicSchema).NotTo(BeNil())
-		usersTable := publicSchema.Tables["users"]
-		Expect(usersTable).NotTo(BeNil())
-		Expect(len(usersTable.Columns)).To(BeNumerically(">", 0),
-			"columns should be present (state preserved from previous test)")
+		Expect(len(schemas["e2e_public"].Tables["users"].Columns)).To(BeNumerically(">", 0),
+			"columns should be present (state preserved)")
 		Expect(columnEnabled(schemas, [2]string{"e2e_public", "users"}, "id")).To(BeTrue(),
 			"id (primary key) should remain enabled regardless")
 		Expect(columnEnabled(schemas, [2]string{"e2e_public", "users"}, "password")).To(BeFalse(),
-			"password should still be disabled (columns not managed, state preserved from prior BLOCK_ALL+columns)")
+			"password should still be disabled (columns not managed, state preserved)")
 	})
 
 	It("ALLOW_ALL — only CR items in payload, others untouched", func() {
-		applySchemaAndWait("ALLOW_ALL only CR items",
-			`    schema_change_handling: ALLOW_ALL
+		crName := "e2e-sp-08"
+		// Step 1: Create with BLOCK_ALL to disable e2e_inventory
+		connectorID := createConnector(crName, `    schema_change_handling: BLOCK_ALL
+    schemas:
+      e2e_public:
+        enabled: true
+        tables:
+          users:
+            enabled: true
+            sync_mode: SOFT_DELETE
+`)
+		DeferCleanup(func() { cleanup(crName, connectorID) })
+
+		// Step 2: Switch to ALLOW_ALL — non-CR schemas should be untouched
+		updateSchema(crName, `    schema_change_handling: ALLOW_ALL
     schemas:
       e2e_public:
         enabled: true
@@ -388,19 +372,18 @@ spec:
             sync_mode: SOFT_DELETE
 `, "True")
 
-		schemas := getSchemas()
+		schemas := getSchemas(connectorID)
 		Expect(schemaEnabled(schemas, "e2e_public")).To(BeTrue(),
 			"e2e_public should be enabled")
 		Expect(tableEnabled(schemas, "e2e_public", "users")).To(BeTrue(),
 			"users should be enabled")
-
 		Expect(schemaEnabled(schemas, "e2e_inventory")).To(BeFalse(),
-			"e2e_inventory should be untouched (still disabled from prior BLOCK_ALL)")
+			"e2e_inventory should be untouched (still disabled from BLOCK_ALL)")
 	})
 
 	It("BLOCK_ALL + hashed column", func() {
-		applySchemaAndWait("BLOCK_ALL hashed column",
-			`    schema_change_handling: BLOCK_ALL
+		crName := "e2e-sp-09"
+		connectorID := createConnector(crName, `    schema_change_handling: BLOCK_ALL
     schemas:
       e2e_public:
         enabled: true
@@ -416,17 +399,14 @@ spec:
                 hashed: true
               password:
                 enabled: false
-`, "True")
+`)
+		DeferCleanup(func() { cleanup(crName, connectorID) })
 
-		schemas := getSchemas()
+		schemas := getSchemas(connectorID)
 		Expect(columnEnabled(schemas, [2]string{"e2e_public", "users"}, "email")).To(BeTrue(),
 			"email should be enabled")
 
-		publicSchema := schemas["e2e_public"]
-		Expect(publicSchema).NotTo(BeNil())
-		usersTable := publicSchema.Tables["users"]
-		Expect(usersTable).NotTo(BeNil())
-		emailCol := usersTable.Columns["email"]
+		emailCol := schemas["e2e_public"].Tables["users"].Columns["email"]
 		Expect(emailCol).NotTo(BeNil())
 		Expect(emailCol.Hashed).NotTo(BeNil())
 		Expect(*emailCol.Hashed).To(BeTrue(),
@@ -439,8 +419,8 @@ spec:
 	})
 
 	It("validation_level NONE — schema applied without verification", func() {
-		applySchemaAndWait("validation_level NONE",
-			`    schema_change_handling: BLOCK_ALL
+		crName := "e2e-sp-10"
+		connectorID := createConnector(crName, `    schema_change_handling: BLOCK_ALL
     validation_level: NONE
     schemas:
       e2e_public:
@@ -449,9 +429,10 @@ spec:
           users:
             enabled: true
             sync_mode: SOFT_DELETE
-`, "True")
+`)
+		DeferCleanup(func() { cleanup(crName, connectorID) })
 
-		schemas := getSchemas()
+		schemas := getSchemas(connectorID)
 		Expect(schemaEnabled(schemas, "e2e_public")).To(BeTrue(),
 			"e2e_public should be enabled")
 		Expect(tableEnabled(schemas, "e2e_public", "users")).To(BeTrue(),
@@ -461,12 +442,8 @@ spec:
 	// --- Reconciliation Flow ---
 
 	It("No changes — skip reconcile when hash unchanged", func() {
-		hashBefore := getSchemaAnnotation()
-		Expect(hashBefore).NotTo(BeEmpty(), "schema hash should exist")
-
-		By("re-applying the same CR (no changes)")
-		applyFivetranConnectorCR(crName, buildCR(`    schema_change_handling: BLOCK_ALL
-    validation_level: NONE
+		crName := "e2e-sp-11"
+		schemaBlock := `    schema_change_handling: BLOCK_ALL
     schemas:
       e2e_public:
         enabled: true
@@ -474,18 +451,35 @@ spec:
           users:
             enabled: true
             sync_mode: SOFT_DELETE
-`))
+`
+		connectorID := createConnector(crName, schemaBlock)
+		DeferCleanup(func() { cleanup(crName, connectorID) })
+
+		hashBefore := getSchemaAnnotation(crName)
+		Expect(hashBefore).NotTo(BeEmpty(), "schema hash should exist")
+
+		By("re-applying the same CR (no changes)")
+		applyFivetranConnectorCR(crName, buildPostgresCR(crName, schemaBlock))
 
 		By("verifying schema hash remains unchanged")
 		Consistently(func() string {
-			return getSchemaAnnotation()
+			return getSchemaAnnotation(crName)
 		}, 10*time.Second, 1*time.Second).Should(Equal(hashBefore),
 			"schema hash should NOT change when CR is unchanged")
 	})
 
 	It("Force reconcile via label — triggers reconciliation regardless of hash", func() {
-		hashBefore := getSchemaAnnotation()
-		Expect(hashBefore).NotTo(BeEmpty(), "schema hash should exist")
+		crName := "e2e-sp-12"
+		connectorID := createConnector(crName, `    schema_change_handling: BLOCK_ALL
+    schemas:
+      e2e_public:
+        enabled: true
+        tables:
+          users:
+            enabled: true
+            sync_mode: SOFT_DELETE
+`)
+		DeferCleanup(func() { cleanup(crName, connectorID) })
 
 		By("capturing resourceVersion before force reconcile")
 		cmd := exec.Command("kubectl", "get", "fivetranconnector", crName,
@@ -524,11 +518,25 @@ spec:
 			"SchemaReady should remain True after force reconcile")
 	})
 
-	// --- Error Scenario (must be last — sets SchemaReady=False) ---
+	// --- Error Scenario ---
 
 	It("BLOCK_ALL — locked column in CR should set SchemaReady=False", func() {
-		By("applying schema config with locked column disabled")
-		applyFivetranConnectorCR(crName, buildCR(`    schema_change_handling: BLOCK_ALL
+		crName := "e2e-sp-13"
+		// Create with valid config first so the operator learns about columns
+		connectorID := createConnector(crName, `    schema_change_handling: BLOCK_ALL
+    schemas:
+      e2e_public:
+        enabled: true
+        tables:
+          users:
+            enabled: true
+            sync_mode: SOFT_DELETE
+`)
+		DeferCleanup(func() { cleanup(crName, connectorID) })
+
+		// Apply config that disables a locked column — don't wait for hash change
+		// since the operator rejects the schema and never updates the hash.
+		applyFivetranConnectorCR(crName, buildPostgresCR(crName, `    schema_change_handling: BLOCK_ALL
     schemas:
       e2e_public:
         enabled: true
@@ -543,7 +551,6 @@ spec:
                 enabled: true
 `))
 
-		By("waiting for SchemaReady=False (operator detects locked column)")
 		Eventually(func() string {
 			return getConditionStatus(crName, "SchemaReady")
 		}, connectorTimeout, connectorInterval).Should(Equal("False"),
@@ -553,20 +560,5 @@ spec:
 		_, _ = fmt.Fprintf(GinkgoWriter, "SchemaReady message: %s\n", condMsg)
 		Expect(condMsg).To(ContainSubstring("locked"),
 			"SchemaReady message should mention locked column")
-	})
-
-	// --- Cleanup ---
-
-	AfterAll(func() {
-		By("cleaning up schema policy connector")
-		deleteFivetranConnectorCR(crName)
-		Eventually(func() (bool, error) {
-			return crExists(crName)
-		}, deletionTimeout, connectorInterval).Should(BeFalse(),
-			"CR was not deleted in time")
-
-		if connectorID != "" {
-			cleanupFivetranConnector(connectorID)
-		}
 	})
 })

@@ -23,7 +23,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/fivetran/go-fivetran/connections"
@@ -55,6 +58,72 @@ func e2eConfigPresent() bool {
 
 func postgresConfigPresent() bool {
 	return e2eConfigPresent() && postgresHost != "" && postgresVaultPassword != ""
+}
+
+// testdataDir returns the absolute path to the testdata/ directory,
+// resolved relative to this source file so it works regardless of cwd.
+func testdataDir() string {
+	_, filename, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(filename), "testdata")
+}
+
+// loadTemplate parses a Go template from testdata/ and executes it with the given data.
+func loadTemplate(name string, data any) string {
+	tmpl, err := template.ParseFiles(filepath.Join(testdataDir(), name))
+	Expect(err).NotTo(HaveOccurred(), "failed to parse template %s", name)
+	var buf bytes.Buffer
+	Expect(tmpl.Execute(&buf, data)).To(Succeed(), "failed to execute template %s", name)
+	return buf.String()
+}
+
+// buildPostgresCR builds a Postgres connector CR YAML from the template.
+// schemasBlock (if non-empty) is appended as the connectorSchemas spec.
+func buildPostgresCR(crName, schemasBlock string) string {
+	cr := loadTemplate("postgres_connector.yaml.tmpl", map[string]string{
+		"Name":         crName,
+		"Namespace":    namespace,
+		"GroupID":      fivetranGroupID,
+		"Host":         postgresHost,
+		"SchemaPrefix": fmt.Sprintf("sp_%s_%s", strings.ReplaceAll(crName, "-", "_"), runSuffix),
+	})
+	if schemasBlock != "" {
+		cr += "  connectorSchemas:\n" + schemasBlock
+	}
+	return cr
+}
+
+// buildGoogleSheetsCR builds a Google Sheets connector CR YAML from the template.
+func buildGoogleSheetsCR(crName string) string {
+	return loadTemplate("google_sheets_connector.yaml.tmpl", map[string]string{
+		"Name":       crName,
+		"Namespace":  namespace,
+		"GroupID":    fivetranGroupID,
+		"SheetID":    googleSheetID,
+		"NamedRange": googleNamedRange,
+		"Schema":     fmt.Sprintf("gs_%s_%s", strings.ReplaceAll(crName, "-", "_"), runSuffix),
+	})
+}
+
+// buildOrphanCR builds an orphan (fivetran_log) connector CR YAML from the template.
+func buildOrphanCR(crName string) string {
+	return loadTemplate("orphan_connector.yaml.tmpl", map[string]string{
+		"Name":      crName,
+		"Namespace": namespace,
+		"GroupID":   fivetranGroupID,
+		"Schema":    fmt.Sprintf("or_%s_%s", strings.ReplaceAll(crName, "-", "_"), runSuffix),
+	})
+}
+
+// getSchemaAnnotation returns the current schema-hash annotation value for a CR.
+func getSchemaAnnotation(crName string) string {
+	cmd := exec.Command("kubectl", "get", "fivetranconnector", crName,
+		"-n", namespace, "-o",
+		`jsonpath={.metadata.annotations.operator\.dataverse\.redhat\.com/schema-hash}`)
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return ""
+	}
+	return output
 }
 
 // setupVaultDevServer deploys a HashiCorp Vault dev server in a separate

@@ -65,32 +65,6 @@ var _ = Describe("FivetranConnector Lifecycle", Ordered, func() {
 		const crName = "e2e-google-sheets"
 		var createdConnectorID string
 
-		crYAML := func() string {
-			return fmt.Sprintf(`apiVersion: operator.dataverse.redhat.com/v1alpha1
-kind: FivetranConnector
-metadata:
-  name: %s
-  namespace: %s
-  annotations:
-    operator.dataverse.redhat.com/allow-deletion: "true"
-spec:
-  connector:
-    group_id: "%s"
-    service: google_sheets
-    paused: true
-    schedule_type: auto
-    sync_frequency: 1440
-    daily_sync_time: "21:00"
-    run_setup_tests: true
-    config:
-      auth_type: ServiceAccount
-      sheet_id: "%s"
-      named_range: "%s"
-      schema: "e2e_gsheets_%s"
-      table: "e2e_test_data"
-`, crName, namespace, fivetranGroupID, googleSheetID, googleNamedRange, runSuffix)
-		}
-
 		AfterAll(func() {
 			By("ensuring Google Sheets connector CR is cleaned up")
 			deleteFivetranConnectorCR(crName)
@@ -114,7 +88,7 @@ spec:
 
 		It("should create the connector and pass setup tests", func() {
 			By("applying the Google Sheets FivetranConnector CR")
-			applyFivetranConnectorCR(crName, crYAML())
+			applyFivetranConnectorCR(crName, buildGoogleSheetsCR(crName))
 
 			By("waiting for ConnectorReady condition to be True")
 			Eventually(func() string {
@@ -178,27 +152,6 @@ spec:
 		const crName = "e2e-orphan-test"
 		var createdConnectorID string
 
-		orphanCRYAML := func() string {
-			return fmt.Sprintf(`apiVersion: operator.dataverse.redhat.com/v1alpha1
-kind: FivetranConnector
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  connector:
-    group_id: "%s"
-    service: fivetran_log
-    paused: true
-    schedule_type: auto
-    sync_frequency: 1440
-    daily_sync_time: "21:00"
-    run_setup_tests: false
-    config:
-      is_account_level_connector: false
-      schema: "e2e_orphan_%s"
-`, crName, namespace, fivetranGroupID, runSuffix)
-		}
-
 		AfterAll(func() {
 			By("ensuring orphan test CR is cleaned up")
 			deleteFivetranConnectorCR(crName)
@@ -217,7 +170,7 @@ spec:
 
 		It("should create the connector successfully", func() {
 			By("applying the FivetranConnector CR without allow-deletion annotation")
-			applyFivetranConnectorCR(crName, orphanCRYAML())
+			applyFivetranConnectorCR(crName, buildOrphanCR(crName))
 
 			By("waiting for ConnectorReady condition to be True")
 			Eventually(func() string {

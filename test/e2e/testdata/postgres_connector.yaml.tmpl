@@ -1,0 +1,24 @@
+apiVersion: operator.dataverse.redhat.com/v1alpha1
+kind: FivetranConnector
+metadata:
+  name: {{.Name}}
+  namespace: {{.Namespace}}
+  annotations:
+    operator.dataverse.redhat.com/allow-deletion: "true"
+spec:
+  connector:
+    group_id: "{{.GroupID}}"
+    service: postgres_rds
+    paused: true
+    schedule_type: auto
+    sync_frequency: 1440
+    daily_sync_time: "21:00"
+    run_setup_tests: true
+    config:
+      host: "{{.Host}}"
+      port: 5432
+      database: "fivetran_e2e"
+      user: "fivetran_e2e"
+      password: "vault:e2e/postgres#password"
+      schema_prefix: "{{.SchemaPrefix}}"
+      update_method: "XMIN"
