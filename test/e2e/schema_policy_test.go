@@ -339,7 +339,7 @@ var _ = Describe("Schema Policy Enforcement", func() {
 		schemas := getSchemas(connectorID)
 		Expect(tableEnabled(schemas, "e2e_public", "users")).To(BeTrue(),
 			"users table should be enabled")
-		Expect(len(schemas["e2e_public"].Tables["users"].Columns)).To(BeNumerically(">", 0),
+		Expect(schemas["e2e_public"].Tables["users"].Columns).ToNot(BeEmpty(),
 			"columns should be present (state preserved)")
 		Expect(columnEnabled(schemas, [2]string{"e2e_public", "users"}, "id")).To(BeTrue(),
 			"id (primary key) should remain enabled regardless")
