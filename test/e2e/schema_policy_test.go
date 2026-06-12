@@ -69,10 +69,10 @@ spec:
       database: "fivetran_e2e"
       user: "fivetran_e2e"
       password: "vault:e2e/postgres#password"
-      schema_prefix: "e2e_schema_policy"
+      schema_prefix: "e2e_sp_%s"
       update_method: "XMIN"
 `, crName, namespace, fivetranGroupID,
-			postgresHost)
+			postgresHost, runSuffix)
 
 		if schemasBlock != "" {
 			cr += "  connectorSchemas:\n" + schemasBlock
@@ -368,12 +368,12 @@ spec:
 		Expect(publicSchema).NotTo(BeNil())
 		usersTable := publicSchema.Tables["users"]
 		Expect(usersTable).NotTo(BeNil())
-		if len(usersTable.Columns) > 0 {
-			_, _ = fmt.Fprintf(GinkgoWriter,
-				"Columns present (state preserved from previous test, not reset)\n")
-		}
+		Expect(len(usersTable.Columns)).To(BeNumerically(">", 0),
+			"columns should be present (state preserved from previous test)")
 		Expect(columnEnabled(schemas, [2]string{"e2e_public", "users"}, "id")).To(BeTrue(),
 			"id (primary key) should remain enabled regardless")
+		Expect(columnEnabled(schemas, [2]string{"e2e_public", "users"}, "password")).To(BeFalse(),
+			"password should still be disabled (columns not managed, state preserved from prior BLOCK_ALL+columns)")
 	})
 
 	It("ALLOW_ALL — only CR items in payload, others untouched", func() {
@@ -394,11 +394,8 @@ spec:
 		Expect(tableEnabled(schemas, "e2e_public", "users")).To(BeTrue(),
 			"users should be enabled")
 
-		if invSchema, ok := schemas["e2e_inventory"]; ok && invSchema != nil {
-			_, _ = fmt.Fprintf(GinkgoWriter,
-				"e2e_inventory exists with enabled=%v (untouched by ALLOW_ALL)\n",
-				invSchema.Enabled)
-		}
+		Expect(schemaEnabled(schemas, "e2e_inventory")).To(BeFalse(),
+			"e2e_inventory should be untouched (still disabled from prior BLOCK_ALL)")
 	})
 
 	It("BLOCK_ALL + hashed column", func() {
@@ -490,18 +487,19 @@ spec:
 		hashBefore := getSchemaAnnotation()
 		Expect(hashBefore).NotTo(BeEmpty(), "schema hash should exist")
 
+		By("capturing resourceVersion before force reconcile")
+		cmd := exec.Command("kubectl", "get", "fivetranconnector", crName,
+			"-n", namespace, "-o", "jsonpath={.metadata.resourceVersion}")
+		rvBefore, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rvBefore).NotTo(BeEmpty())
+
 		By("applying force-reconcile label")
-		cmd := exec.Command("kubectl", "label", "fivetranconnector", crName,
+		cmd = exec.Command("kubectl", "label", "fivetranconnector", crName,
 			"operator.dataverse.redhat.com/force-reconcile=true",
 			"-n", namespace, "--overwrite")
-		_, err := utils.Run(cmd)
+		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to apply force-reconcile label")
-
-		By("waiting for operator to reconcile (SchemaReady stays True)")
-		Eventually(func() string {
-			return getConditionStatus(crName, "SchemaReady")
-		}, connectorTimeout, connectorInterval).Should(Equal("True"),
-			"SchemaReady should remain True after force reconcile")
 
 		By("verifying force-reconcile label was removed by operator")
 		Eventually(func() string {
@@ -512,6 +510,18 @@ spec:
 			return output
 		}, 30*time.Second, connectorInterval).Should(BeEmpty(),
 			"force-reconcile label should be removed after reconciliation")
+
+		By("verifying operator reconciled (resourceVersion changed)")
+		cmd = exec.Command("kubectl", "get", "fivetranconnector", crName,
+			"-n", namespace, "-o", "jsonpath={.metadata.resourceVersion}")
+		rvAfter, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rvAfter).NotTo(Equal(rvBefore),
+			"resourceVersion should change after force reconcile, proving operator ran")
+
+		By("verifying SchemaReady is still True")
+		Expect(getConditionStatus(crName, "SchemaReady")).To(Equal("True"),
+			"SchemaReady should remain True after force reconcile")
 	})
 
 	// --- Error Scenario (must be last — sets SchemaReady=False) ---

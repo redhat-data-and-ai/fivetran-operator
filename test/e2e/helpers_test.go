@@ -21,7 +21,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -44,7 +43,9 @@ func loadE2EConfig() {
 	googleSheetID = os.Getenv("E2E_GOOGLE_SHEET_ID")
 	googleNamedRange = os.Getenv("E2E_GOOGLE_NAMED_RANGE")
 	postgresHost = os.Getenv("E2E_POSTGRES_HOST")
-	postgresPassword = os.Getenv("E2E_POSTGRES_PASSWORD")
+	postgresVaultPassword = os.Getenv("E2E_POSTGRES_PASSWORD")
+
+	runSuffix = fmt.Sprintf("%x", time.Now().UnixNano()&0xFFFFFF)
 }
 
 func e2eConfigPresent() bool {
@@ -53,7 +54,7 @@ func e2eConfigPresent() bool {
 }
 
 func postgresConfigPresent() bool {
-	return e2eConfigPresent() && postgresHost != "" && postgresPassword != ""
+	return e2eConfigPresent() && postgresHost != "" && postgresVaultPassword != ""
 }
 
 // setupVaultDevServer deploys a HashiCorp Vault dev server in a separate
@@ -271,36 +272,22 @@ func crExists(crName string) (bool, error) {
 	return true, nil
 }
 
-// fivetranConnectorExists checks via the Fivetran API whether a connector still exists.
-// Returns false only when the API returns 404 (confirmed deleted).
-// Returns true for 200 (exists), network errors, and unexpected status codes
+// fivetranConnectorExists checks via the Fivetran SDK whether a connector still exists.
+// Returns false only when the API confirms the connector is gone (error response).
+// Returns true for successful lookups and any unexpected errors
 // (fail-safe: assume connector exists if we can't confirm deletion).
 func fivetranConnectorExists(connectorID string) bool {
+	client := newFivetranSDKClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET",
-		fmt.Sprintf("https://api.fivetran.com/v1/connections/%s", connectorID), nil)
+	_, err := client.Connections.GetConnection(ctx, connectorID)
 	if err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: failed to create request for %s: %v (assuming connector still exists)\n", connectorID, err)
-		return true
-	}
-	req.SetBasicAuth(fivetranAPIKey, fivetranAPISecret)
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: Fivetran API check failed for %s: %v (assuming connector still exists)\n", connectorID, err)
-		return true
-	}
-	defer func() { _ = resp.Body.Close() }()
-	switch resp.StatusCode {
-	case http.StatusNotFound:
+		_, _ = fmt.Fprintf(GinkgoWriter,
+			"fivetranConnectorExists(%s): SDK error (treating as not found): %v\n",
+			connectorID, err)
 		return false
-	case http.StatusOK:
-		return true
-	default:
-		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: unexpected HTTP %d checking connector %s (assuming connector still exists)\n", resp.StatusCode, connectorID)
-		return true
 	}
+	return true
 }
 
 // newFivetranSDKClient creates a Fivetran SDK client for E2E test assertions.
@@ -326,27 +313,15 @@ func getConnectorDetails(connectorID string) (connections.DetailsWithCustomConfi
 	return client.Connections.GetConnection(ctx, connectorID)
 }
 
-// cleanupFivetranConnector deletes a connector directly via the Fivetran API.
+// cleanupFivetranConnector deletes a connector via the Fivetran SDK.
 // Used as a safety net when the operator's finalizer fails to clean up.
 func cleanupFivetranConnector(connectorID string) {
 	_, _ = fmt.Fprintf(GinkgoWriter, "Cleaning up connector %s via Fivetran API\n", connectorID)
+	client := newFivetranSDKClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "DELETE",
-		fmt.Sprintf("https://api.fivetran.com/v1/connections/%s", connectorID), nil)
-	if err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: failed to create delete request for %s: %v\n", connectorID, err)
-		return
-	}
-	req.SetBasicAuth(fivetranAPIKey, fivetranAPISecret)
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	_, err := client.Connections.DeleteConnection(ctx, connectorID)
 	if err != nil {
 		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: failed to cleanup connector %s: %v\n", connectorID, err)
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
-		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: unexpected HTTP %d cleaning up connector %s\n", resp.StatusCode, connectorID)
 	}
 }

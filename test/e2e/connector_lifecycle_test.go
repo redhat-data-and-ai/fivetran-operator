@@ -86,9 +86,9 @@ spec:
       auth_type: ServiceAccount
       sheet_id: "%s"
       named_range: "%s"
-      schema: "e2e_google_sheets"
+      schema: "e2e_gsheets_%s"
       table: "e2e_test_data"
-`, crName, namespace, fivetranGroupID, googleSheetID, googleNamedRange)
+`, crName, namespace, fivetranGroupID, googleSheetID, googleNamedRange, runSuffix)
 		}
 
 		AfterAll(func() {
@@ -195,8 +195,8 @@ spec:
     run_setup_tests: false
     config:
       is_account_level_connector: false
-      schema: "e2e_orphan_test"
-`, crName, namespace, fivetranGroupID)
+      schema: "e2e_orphan_%s"
+`, crName, namespace, fivetranGroupID, runSuffix)
 		}
 
 		AfterAll(func() {
