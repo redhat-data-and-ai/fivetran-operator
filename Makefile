@@ -146,6 +146,10 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v -timeout 30m
 	$(MAKE) cleanup-test-e2e
 
+.PHONY: test-e2e-full
+test-e2e-full: ## Run full E2E suite including schema policy tests with ephemeral RDS.
+	./test/e2e/scripts/run-e2e-with-rds.sh
+
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)

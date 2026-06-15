@@ -1,0 +1,22 @@
+apiVersion: operator.dataverse.redhat.com/v1alpha1
+kind: FivetranConnector
+metadata:
+  name: {{.Name}}
+  namespace: {{.Namespace}}
+  annotations:
+    operator.dataverse.redhat.com/allow-deletion: "true"
+spec:
+  connector:
+    group_id: "{{.GroupID}}"
+    service: google_sheets
+    paused: true
+    schedule_type: auto
+    sync_frequency: 1440
+    daily_sync_time: "21:00"
+    run_setup_tests: true
+    config:
+      auth_type: ServiceAccount
+      sheet_id: "{{.SheetID}}"
+      named_range: "{{.NamedRange}}"
+      schema: "{{.Schema}}"
+      table: "e2e_test_data"

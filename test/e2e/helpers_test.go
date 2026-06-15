@@ -21,15 +21,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
+	"text/template"
 	"time"
 
+	"github.com/fivetran/go-fivetran/connections"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	fivetranPkg "github.com/redhat-data-and-ai/fivetran-operator/pkg/fivetran"
 	"github.com/redhat-data-and-ai/fivetran-operator/test/utils"
 )
 
@@ -41,11 +45,85 @@ func loadE2EConfig() {
 	fivetranGroupID = os.Getenv("E2E_FIVETRAN_GROUP_ID")
 	googleSheetID = os.Getenv("E2E_GOOGLE_SHEET_ID")
 	googleNamedRange = os.Getenv("E2E_GOOGLE_NAMED_RANGE")
+	postgresHost = os.Getenv("E2E_POSTGRES_HOST")
+	postgresVaultPassword = os.Getenv("E2E_POSTGRES_PASSWORD")
+
+	runSuffix = fmt.Sprintf("%x", time.Now().UnixNano()&0xFFFFFF)
 }
 
 func e2eConfigPresent() bool {
 	return fivetranAPIKey != "" && fivetranAPISecret != "" && fivetranGroupID != "" &&
 		googleSheetID != "" && googleNamedRange != ""
+}
+
+func postgresConfigPresent() bool {
+	return e2eConfigPresent() && postgresHost != "" && postgresVaultPassword != ""
+}
+
+// testdataDir returns the absolute path to the testdata/ directory,
+// resolved relative to this source file so it works regardless of cwd.
+func testdataDir() string {
+	_, filename, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(filename), "testdata")
+}
+
+// loadTemplate parses a Go template from testdata/ and executes it with the given data.
+func loadTemplate(name string, data any) string {
+	tmpl, err := template.ParseFiles(filepath.Join(testdataDir(), name))
+	Expect(err).NotTo(HaveOccurred(), "failed to parse template %s", name)
+	var buf bytes.Buffer
+	Expect(tmpl.Execute(&buf, data)).To(Succeed(), "failed to execute template %s", name)
+	return buf.String()
+}
+
+// buildPostgresCR builds a Postgres connector CR YAML from the template.
+// schemasBlock (if non-empty) is appended as the connectorSchemas spec.
+func buildPostgresCR(crName, schemasBlock string) string {
+	cr := loadTemplate("postgres_connector.yaml.tmpl", map[string]string{
+		"Name":         crName,
+		"Namespace":    namespace,
+		"GroupID":      fivetranGroupID,
+		"Host":         postgresHost,
+		"SchemaPrefix": fmt.Sprintf("sp_%s_%s", strings.ReplaceAll(crName, "-", "_"), runSuffix),
+	})
+	if schemasBlock != "" {
+		cr += "  connectorSchemas:\n" + schemasBlock
+	}
+	return cr
+}
+
+// buildGoogleSheetsCR builds a Google Sheets connector CR YAML from the template.
+func buildGoogleSheetsCR(crName string) string {
+	return loadTemplate("google_sheets_connector.yaml.tmpl", map[string]string{
+		"Name":       crName,
+		"Namespace":  namespace,
+		"GroupID":    fivetranGroupID,
+		"SheetID":    googleSheetID,
+		"NamedRange": googleNamedRange,
+		"Schema":     fmt.Sprintf("gs_%s_%s", strings.ReplaceAll(crName, "-", "_"), runSuffix),
+	})
+}
+
+// buildOrphanCR builds an orphan (fivetran_log) connector CR YAML from the template.
+func buildOrphanCR(crName string) string {
+	return loadTemplate("orphan_connector.yaml.tmpl", map[string]string{
+		"Name":      crName,
+		"Namespace": namespace,
+		"GroupID":   fivetranGroupID,
+		"Schema":    fmt.Sprintf("or_%s_%s", strings.ReplaceAll(crName, "-", "_"), runSuffix),
+	})
+}
+
+// getSchemaAnnotation returns the current schema-hash annotation value for a CR.
+func getSchemaAnnotation(crName string) string {
+	cmd := exec.Command("kubectl", "get", "fivetranconnector", crName,
+		"-n", namespace, "-o",
+		`jsonpath={.metadata.annotations.operator\.dataverse\.redhat\.com/schema-hash}`)
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return ""
+	}
+	return output
 }
 
 // setupVaultDevServer deploys a HashiCorp Vault dev server in a separate
@@ -114,10 +192,19 @@ spec:
 	_, err = utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "Failed to enable AppRole auth")
 
+	By("creating Vault policy for e2e secret access")
+	cmd = exec.Command("kubectl", "exec", "vault", "-n", vaultNamespace, "--",
+		"sh", "-c",
+		`vault policy write e2e-read - <<'HCL'
+path "secret/data/e2e/*" { capabilities = ["read"] }
+HCL`)
+	_, err = utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to create Vault policy")
+
 	By("creating AppRole role")
 	cmd = exec.Command("kubectl", "exec", "vault", "-n", vaultNamespace, "--",
 		"vault", "write", "auth/approle/role/e2e-role",
-		"token_policies=default", "token_ttl=1h", "token_max_ttl=4h")
+		"token_policies=default,e2e-read", "token_ttl=1h", "token_max_ttl=4h")
 	_, err = utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "Failed to create AppRole role")
 
@@ -214,6 +301,19 @@ func getConditionStatus(crName, conditionType string) string {
 	return output
 }
 
+// getConditionMessage returns the message string of a named condition on a CR.
+func getConditionMessage(crName, conditionType string) string {
+	jsonpath := fmt.Sprintf(
+		`jsonpath={.status.conditions[?(@.type=="%s")].message}`, conditionType)
+	cmd := exec.Command("kubectl", "get", "fivetranconnector", crName,
+		"-n", namespace, "-o", jsonpath)
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return ""
+	}
+	return output
+}
+
 // getStatusField returns a field from the CR's .status using a jsonpath expression.
 func getStatusField(crName, field string) string {
 	cmd := exec.Command("kubectl", "get", "fivetranconnector", crName,
@@ -241,59 +341,56 @@ func crExists(crName string) (bool, error) {
 	return true, nil
 }
 
-// fivetranConnectorExists checks via the Fivetran API whether a connector still exists.
-// Returns false only when the API returns 404 (confirmed deleted).
-// Returns true for 200 (exists), network errors, and unexpected status codes
+// fivetranConnectorExists checks via the Fivetran SDK whether a connector still exists.
+// Returns false only when the API confirms the connector is gone (error response).
+// Returns true for successful lookups and any unexpected errors
 // (fail-safe: assume connector exists if we can't confirm deletion).
 func fivetranConnectorExists(connectorID string) bool {
+	client := newFivetranSDKClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET",
-		fmt.Sprintf("https://api.fivetran.com/v1/connections/%s", connectorID), nil)
+	_, err := client.Connections.GetConnection(ctx, connectorID)
 	if err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: failed to create request for %s: %v (assuming connector still exists)\n", connectorID, err)
-		return true
-	}
-	req.SetBasicAuth(fivetranAPIKey, fivetranAPISecret)
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: Fivetran API check failed for %s: %v (assuming connector still exists)\n", connectorID, err)
-		return true
-	}
-	defer func() { _ = resp.Body.Close() }()
-	switch resp.StatusCode {
-	case http.StatusNotFound:
+		_, _ = fmt.Fprintf(GinkgoWriter,
+			"fivetranConnectorExists(%s): SDK error (treating as not found): %v\n",
+			connectorID, err)
 		return false
-	case http.StatusOK:
-		return true
-	default:
-		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: unexpected HTTP %d checking connector %s (assuming connector still exists)\n", resp.StatusCode, connectorID)
-		return true
 	}
+	return true
 }
 
-// cleanupFivetranConnector deletes a connector directly via the Fivetran API.
+// newFivetranSDKClient creates a Fivetran SDK client for E2E test assertions.
+func newFivetranSDKClient() *fivetranPkg.Client {
+	client, err := fivetranPkg.NewClient(fivetranAPIKey, fivetranAPISecret)
+	Expect(err).NotTo(HaveOccurred(), "Failed to create Fivetran SDK client")
+	return client
+}
+
+// getConnectorSchemaDetails fetches the schema configuration using the Fivetran SDK.
+func getConnectorSchemaDetails(connectorID string) (connections.ConnectionSchemaDetailsResponse, error) {
+	client := newFivetranSDKClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return client.Schemas.GetSchemaDetails(ctx, connectorID)
+}
+
+// getConnectorDetails fetches the connector details using the Fivetran SDK.
+func getConnectorDetails(connectorID string) (connections.DetailsWithCustomConfigNoTestsResponse, error) {
+	client := newFivetranSDKClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return client.Connections.GetConnection(ctx, connectorID)
+}
+
+// cleanupFivetranConnector deletes a connector via the Fivetran SDK.
 // Used as a safety net when the operator's finalizer fails to clean up.
 func cleanupFivetranConnector(connectorID string) {
 	_, _ = fmt.Fprintf(GinkgoWriter, "Cleaning up connector %s via Fivetran API\n", connectorID)
+	client := newFivetranSDKClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "DELETE",
-		fmt.Sprintf("https://api.fivetran.com/v1/connections/%s", connectorID), nil)
-	if err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: failed to create delete request for %s: %v\n", connectorID, err)
-		return
-	}
-	req.SetBasicAuth(fivetranAPIKey, fivetranAPISecret)
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	_, err := client.Connections.DeleteConnection(ctx, connectorID)
 	if err != nil {
 		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: failed to cleanup connector %s: %v\n", connectorID, err)
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
-		_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: unexpected HTTP %d cleaning up connector %s\n", resp.StatusCode, connectorID)
 	}
 }

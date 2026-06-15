@@ -61,35 +61,9 @@ var _ = Describe("FivetranConnector Lifecycle", Ordered, func() {
 		}
 	})
 
-	Context("Google Sheets connector", func() {
+	Context("Google Sheets connector (with deletion)", func() {
 		const crName = "e2e-google-sheets"
 		var createdConnectorID string
-
-		crYAML := func() string {
-			return fmt.Sprintf(`apiVersion: operator.dataverse.redhat.com/v1alpha1
-kind: FivetranConnector
-metadata:
-  name: %s
-  namespace: %s
-  annotations:
-    operator.dataverse.redhat.com/allow-deletion: "true"
-spec:
-  connector:
-    group_id: "%s"
-    service: google_sheets
-    paused: true
-    schedule_type: auto
-    sync_frequency: 1440
-    daily_sync_time: "21:00"
-    run_setup_tests: true
-    config:
-      auth_type: ServiceAccount
-      sheet_id: "%s"
-      named_range: "%s"
-      schema: "e2e_google_sheets"
-      table: "e2e_test_data"
-`, crName, namespace, fivetranGroupID, googleSheetID, googleNamedRange)
-		}
 
 		AfterAll(func() {
 			By("ensuring Google Sheets connector CR is cleaned up")
@@ -114,7 +88,7 @@ spec:
 
 		It("should create the connector and pass setup tests", func() {
 			By("applying the Google Sheets FivetranConnector CR")
-			applyFivetranConnectorCR(crName, crYAML())
+			applyFivetranConnectorCR(crName, buildGoogleSheetsCR(crName))
 
 			By("waiting for ConnectorReady condition to be True")
 			Eventually(func() string {
@@ -171,6 +145,80 @@ spec:
 				return fivetranConnectorExists(createdConnectorID)
 			}, 2*time.Minute, connectorInterval).Should(BeFalse(),
 				"Connector should be deleted from Fivetran after CR removal")
+		})
+	})
+
+	Context("Google Sheets connector (orphan on delete)", func() {
+		const crName = "e2e-orphan-test"
+		var createdConnectorID string
+
+		AfterAll(func() {
+			By("ensuring orphan test CR is cleaned up")
+			deleteFivetranConnectorCR(crName)
+
+			By("waiting for CR to be fully removed")
+			Eventually(func() (bool, error) {
+				return crExists(crName)
+			}, deletionTimeout, connectorInterval).Should(BeFalse(),
+				"FivetranConnector CR was not deleted in time")
+
+			if createdConnectorID != "" {
+				By("cleaning up orphaned connector via Fivetran API")
+				cleanupFivetranConnector(createdConnectorID)
+			}
+		})
+
+		It("should create the connector successfully", func() {
+			By("applying the FivetranConnector CR without allow-deletion annotation")
+			applyFivetranConnectorCR(crName, buildOrphanCR(crName))
+
+			By("waiting for ConnectorReady condition to be True")
+			Eventually(func() string {
+				return getConditionStatus(crName, "ConnectorReady")
+			}, connectorTimeout, connectorInterval).Should(Equal("True"),
+				"ConnectorReady did not become True")
+
+			By("capturing the connectorId for later verification")
+			createdConnectorID = getStatusField(crName, "connectorId")
+			Expect(createdConnectorID).NotTo(BeEmpty(),
+				"status.connectorId should be set")
+			_, _ = fmt.Fprintf(GinkgoWriter,
+				"Orphan test connector created with ID: %s\n",
+				createdConnectorID)
+		})
+
+		It("should preserve the Fivetran connector when CR is deleted without allow-deletion", func() {
+			Expect(createdConnectorID).NotTo(BeEmpty(),
+				"connectorId must be set before orphan test")
+
+			By("deleting the FivetranConnector CR (no allow-deletion annotation)")
+			cmd := exec.Command("kubectl", "delete", "fivetranconnector", crName,
+				"-n", namespace, "--timeout=180s")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(),
+				"Failed to delete FivetranConnector CR")
+
+			By("waiting for the CR to be fully removed from Kubernetes")
+			Eventually(func() (bool, error) {
+				return crExists(crName)
+			}, deletionTimeout, connectorInterval).Should(BeFalse(),
+				"CR was not removed from Kubernetes")
+
+			By("verifying the connector STILL EXISTS in Fivetran (orphaned)")
+			Expect(fivetranConnectorExists(createdConnectorID)).To(BeTrue(),
+				"Connector should still exist in Fivetran after "+
+					"CR deletion without allow-deletion annotation")
+
+			By("verifying connector details are accessible via API")
+			details, err := getConnectorDetails(createdConnectorID)
+			Expect(err).NotTo(HaveOccurred(),
+				"Should be able to fetch orphaned connector details")
+			Expect(details.Data.ID).To(Equal(createdConnectorID),
+				"Connector ID should match")
+
+			_, _ = fmt.Fprintf(GinkgoWriter,
+				"Confirmed connector %s is preserved (orphaned) in Fivetran\n",
+				createdConnectorID)
 		})
 	})
 })

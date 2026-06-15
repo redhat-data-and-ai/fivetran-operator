@@ -74,6 +74,18 @@ jobs:
       - name: Install Kind
         run: |
           go install sigs.k8s.io/kind@v0.27.0
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+      - name: Create E2E test database
+        timeout-minutes: 15
+        run: |
+          cd test/e2e/scripts
+          ./rds-lifecycle.sh create
+          ./rds-lifecycle.sh seed
       - name: Run E2E tests
         env:
           E2E_FIVETRAN_API_KEY: ${{ secrets.E2E_FIVETRAN_API_KEY }}
@@ -83,4 +95,12 @@ jobs:
           E2E_GOOGLE_NAMED_RANGE: ${{ vars.E2E_GOOGLE_NAMED_RANGE }}
           CONTAINER_TOOL: docker
         run: |
+          source test/e2e/scripts/.rds-state.env
+          export E2E_POSTGRES_HOST="${RDS_ENDPOINT}"
+          export E2E_POSTGRES_PASSWORD="${FIVETRAN_USER_PASSWORD}"
           make test-e2e
+      - name: Destroy E2E test database
+        if: always()
+        run: |
+          cd test/e2e/scripts
+          ./rds-lifecycle.sh destroy

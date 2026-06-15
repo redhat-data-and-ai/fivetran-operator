@@ -49,6 +49,14 @@ var (
 	fivetranGroupID   string
 	googleSheetID     string
 	googleNamedRange  string
+
+	// Postgres RDS configuration for schema policy tests.
+	postgresHost          string
+	postgresVaultPassword string
+
+	// runSuffix is a short random hex string appended to Fivetran schema names
+	// to avoid collisions when multiple CI runs share the same Fivetran group.
+	runSuffix string
 )
 
 const (
@@ -134,6 +142,15 @@ var _ = BeforeSuite(func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to create fivetran-secrets")
 
 		setupVaultDevServer()
+
+		if postgresVaultPassword != "" {
+			By("storing Postgres password in Vault for schema policy tests")
+			cmd = exec.Command("kubectl", "exec", "vault", "-n", vaultNamespace, "--",
+				"vault", "kv", "put", "secret/e2e/postgres",
+				fmt.Sprintf("password=%s", postgresVaultPassword))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to store Postgres password in Vault")
+		}
 	} else {
 		By("creating placeholder fivetran-secrets (lifecycle tests disabled)")
 		placeholderSecret := map[string]interface{}{
