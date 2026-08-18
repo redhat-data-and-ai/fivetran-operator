@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -208,6 +209,10 @@ func main() {
 	setupLog.Info("Operator is configured to watch a single namespace", "namespace", watchNamespace)
 	setupLog.Info("Max concurrent reconciles configured", "maxConcurrentReconciles", maxConcurrentReconciles)
 
+	leaseDuration := 60 * time.Second
+	renewDeadline := 40 * time.Second
+	retryPeriod := 5 * time.Second
+
 	managerOptions := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
@@ -215,6 +220,9 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "2173ea51.dataverse.redhat.com",
+		LeaseDuration:          &leaseDuration,
+		RenewDeadline:          &renewDeadline,
+		RetryPeriod:            &retryPeriod,
 		Cache: cache.Options{
 			DefaultNamespaces: map[string]cache.Config{watchNamespace: {}},
 		},
