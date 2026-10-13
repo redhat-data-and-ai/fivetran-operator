@@ -14,6 +14,14 @@ The Fivetran Operator enables Kubernetes-native management of Fivetran connector
 - kubectl version v1.11.3+.
 - Access to a Kubernetes v1.11.3+ cluster.
 
+### Install pre-commit (recommended)
+
+```sh
+pip install pre-commit && pre-commit install
+```
+
+Hooks include `gitleaks`, `detect-private-key`, and `scripts/check-secrets.sh` on **staged** changes (not a full-repository or full-history scan). `vendor/` is excluded from pre-commit. Also enable [GitHub Secret Scanning](https://docs.github.com/en/code-security/concepts/secret-security/secret-scanning) and [Push Protection](https://docs.github.com/en/code-security/concepts/secret-security/push-protection) on the repository for defense in depth.
+
 ### To Deploy on the cluster
 **Build and push your image to the location specified by `IMG`:**
 

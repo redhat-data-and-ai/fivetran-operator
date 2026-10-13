@@ -1,5 +1,33 @@
-# Minimal pre-commit configuration - fast checks only
+# Pre-commit hooks for fivetran-operator
+# (secret scanning aligned with usernaut / template-ui / naysayer).
+#
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+#
+# Coverage: gitleaks (pre-commit hook) scans staged changes only. scripts/check-secrets.sh
+# also uses git diff --cached, so it checks staged add/copy/modify paths—not the full tree.
+# For full-repo history scanning, rely on GitHub Secret Scanning / Push Protection (see README).
+#
+# Also enable GitHub Secret Scanning + Push Protection on the repo:
+# https://docs.github.com/en/code-security/concepts/secret-security/secret-scanning
+# https://docs.github.com/en/code-security/concepts/secret-security/push-protection
+
+# Vendored Go deps (go mod vendor); excluded from all hooks including gitleaks.
+exclude: "^vendor/"
+
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: detect-private-key
+
+  # Secret detection (same approach as usernaut / template-ui)
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.28.0
+    hooks:
+      - id: gitleaks
+
+  # Existing project checks
   - repo: local
     hooks:
       - id: check-secrets
@@ -7,7 +35,7 @@ repos:
         entry: bash scripts/check-secrets.sh
         language: system
         pass_filenames: false
-        
+
       - id: golangci-lint
         name: Lint
         entry: make lint

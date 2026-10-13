@@ -19,7 +19,7 @@ NC='\033[0m' # No Color
 echo -e "${GREEN}🔍 Scanning for sensitive information...${NC}"
 
 # Get list of files to be committed, excluding vendor directory
-FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -v '^vendor/' | grep -v '^docs/ | cat')
+FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -v '^vendor/' | grep -v '^docs/' || true)
 
 if [ -z "$FILES" ]; then
     echo -e "${GREEN}✅ No files to check${NC}"
@@ -81,7 +81,9 @@ check_file() {
         pattern="${PATTERN_REGEXES[$i]}"
         if echo "$file_content" | grep -qiE "$pattern"; then
             echo -e "${RED}❌ FOUND $pattern_name in $file${NC}"
-            echo "$file_content" | grep -niE "$pattern" | head -5
+            while IFS= read -r line_num; do
+                echo -e "${RED}   line ${line_num}: (${pattern_name}) [match redacted]${NC}"
+            done < <(echo "$file_content" | grep -niE "$pattern" | head -5 | cut -d: -f1)
             SECRETS_FOUND=1
         fi
     done
