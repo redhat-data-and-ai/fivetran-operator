@@ -22,9 +22,6 @@ linters:
     - unparam
     - unused
   settings:
-    goconst:
-      # Keep descriptive string literals inline in test fixtures.
-      ignore-tests: true
     lll:
       line-length: 200
     revive:
